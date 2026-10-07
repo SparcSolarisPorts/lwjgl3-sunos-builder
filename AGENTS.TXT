@@ -1,0 +1,15 @@
+# lwjgl3-sunos-builder
+LWJGL3 Builder for SPARC Solaris
+
+
+• Minecraft 1.13: Introduced LWJGL 3 (starting with snapshot 17w43a, moving from 3.1.2 up to version 3.1.6 in 1.13-pre4).
+• Minecraft 1.14: Updated to LWJGL 3.2.1 (introduced during 1.14 snapshots like 19w06a).
+• Minecraft 1.15 to 1.18: Used iterative 3.2.x releases (such as 3.2.1 / 3.2.2).
+• Minecraft 1.19: Migrated to LWJGL 3.3.1 (introduced in snapshot 22w16a).
+• Minecraft 1.20 to 1.21: Standardized on LWJGL 3.3.3.
+• Recent Snapshots (26.1+): Updated further to LWJGL 3.4.1 and newer.
+
+
+I have the libraries for 1.20.1 in ~/.minecraft/natives and a startup script in ~/Downloads/start-minecraft-1.20.1.sh use both for reference to make sure all the natives are build.
+
+There are patches you must apply as well from ~/git/glfw and ~/git/glfw/lwjgl3 to make it work on SunOS. You must also make patches for SDL3 (only on 26.3 and newer) to allow it to use vulkan. This repo is mostly of the patches and scripts for each LWJGL3 and GLFW and SDL3 and JMALLOC and all other natives needed for Minecraft. I do not need for snapshots only for main versions. It should be in  a similar format to jdk sunos builder and jdk sunos patches but combined. This hsould be able to build every version needed for 1.13 and newer.

@@ -1,0 +1,15 @@
+--- a/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
+@@ -20,6 +20,12 @@
+             return System.mapLibraryName(name);
+         }
+     },
++    SUNOS("SunOS") {
++        @Override
++        String mapLibraryName(String name) {
++            return LINUX.mapLibraryName(name);
++        }
++    },
+     MACOSX("Mac OS X") {
+         private final Pattern DYLIB = Pattern.compile("(?:^|/)lib\\w+[.]dylib$");
+ 

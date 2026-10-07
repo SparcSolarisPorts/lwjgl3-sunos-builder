@@ -1,0 +1,24 @@
+--- a/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
+@@ -25,6 +25,12 @@
+             return System.mapLibraryName(name);
+         }
+     },
++    SUNOS("SunOS", "sunos") {
++        @Override
++        String mapLibraryName(String name) {
++            return LINUX.mapLibraryName(name);
++        }
++    },
+     // TODO: Rename to MACOS in LWJGL 4
+     MACOSX("macOS", "macos") {
+         private final Pattern DYLIB = Pattern.compile("(?:^|/)lib\\w+(?:[.]\\d+)*[.]dylib$");
+@@ -62,7 +68,7 @@
+ 
+         static {
+             String  osArch  = System.getProperty("os.arch");
+-            boolean is64Bit = osArch.contains("64") || osArch.startsWith("armv8");
++            boolean is64Bit = osArch.contains("64") || osArch.startsWith("armv8") || osArch.startsWith("sparc");
+ 
+             current = osArch.startsWith("arm") || osArch.startsWith("aarch64")
+                 ? (is64Bit ? Architecture.ARM64 : Architecture.ARM32)

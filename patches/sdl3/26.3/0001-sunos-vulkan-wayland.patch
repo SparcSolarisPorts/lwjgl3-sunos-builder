@@ -1,0 +1,31 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -294,8 +294,9 @@
+ set(SDL_VULKAN_DEFAULT ON)
+ 
+ set(SDL_X11_XRANDR_DEFAULT ON)
++set(SDL_WAYLAND_DEFAULT ON)
+ if(SOLARIS)
+-  set(SDL_VULKAN_DEFAULT OFF)
++  set(SDL_WAYLAND_DEFAULT OFF)
+   set(SDL_X11_XRANDR_DEFAULT OFF)
+ endif()
+ 
+@@ -369,7 +370,7 @@
+ dep_option(SDL_FRIBIDI_SHARED      "Dynamically load Fribidi support" ON "SDL_FRIBIDI;SDL_DEPS_SHARED" OFF)
+ dep_option(SDL_LIBTHAI             "Enable Thai support" ON SDL_X11 OFF)
+ dep_option(SDL_LIBTHAI_SHARED      "Dynamically load Thai support" ON "SDL_LIBTHAI;SDL_DEPS_SHARED" OFF)
+-dep_option(SDL_WAYLAND             "Use Wayland video driver" ${UNIX_SYS} "SDL_VIDEO" OFF)
++dep_option(SDL_WAYLAND             "Use Wayland video driver" "${SDL_WAYLAND_DEFAULT}" "SDL_VIDEO" OFF)
+ dep_option(SDL_WAYLAND_SHARED      "Dynamically load Wayland support" ON "SDL_WAYLAND;SDL_DEPS_SHARED" OFF)
+ dep_option(SDL_WAYLAND_LIBDECOR    "Use client-side window decorations on Wayland" ON "SDL_WAYLAND" OFF)
+ dep_option(SDL_WAYLAND_LIBDECOR_SHARED     "Dynamically load libdecor support" ON "SDL_WAYLAND_LIBDECOR;SDL_WAYLAND_SHARED;SDL_DEPS_SHARED" OFF)
+@@ -385,7 +386,7 @@
+ dep_option(SDL_RENDER_METAL        "Enable the Metal render driver" ON "SDL_RENDER;APPLE" OFF)
+ dep_option(SDL_RENDER_GPU          "Enable the SDL_GPU render driver" ON "SDL_RENDER;SDL_GPU" OFF)
+ dep_option(SDL_VIVANTE             "Use Vivante EGL video driver" ON "${UNIX_SYS};SDL_CPU_ARM32" OFF)
+-dep_option(SDL_VULKAN              "Enable Vulkan support" "${SDL_VULKAN_DEFAULT}" "SDL_VIDEO;ANDROID OR APPLE OR LINUX OR FREEBSD OR OPENBSD OR WINDOWS OR CYGWIN" OFF)
++dep_option(SDL_VULKAN              "Enable Vulkan support" "${SDL_VULKAN_DEFAULT}" "SDL_VIDEO;ANDROID OR APPLE OR LINUX OR FREEBSD OR OPENBSD OR WINDOWS OR CYGWIN OR SOLARIS" OFF)
+ dep_option(SDL_RENDER_VULKAN       "Enable the Vulkan render driver" ON "SDL_RENDER;SDL_VULKAN" OFF)
+ dep_option(SDL_METAL               "Enable Metal support" ON "APPLE" OFF)
+ set_option(SDL_OPENVR              "Use OpenVR video driver" OFF)
