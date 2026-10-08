@@ -1,5 +1,6 @@
 bin/
 build/
 work/
+cache/
 *.log
 config.local

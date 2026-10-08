@@ -1,0 +1,997 @@
+Subject: [PATCH] LWJGL 3.1.6: Solaris/illumos (SunOS) + SPARC V9 platform support
+
+diff --git a/config/build-definitions.xml b/config/build-definitions.xml
+index 46863b70b..c69c90387 100644
+--- a/config/build-definitions.xml
++++ b/config/build-definitions.xml
+@@ -68,10 +68,13 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+     <property name="release.native" location="${release}/native" relative="true"/>
+ 
+     <!--
+-        The target native architecture. Must be either x86 or x64. By default, os.arch of the JVM
++        The target native architecture. Must be either x86, x64 or sparc64. By default, os.arch of the JVM
+         that runs ANT is used, but this can be overridden for cross-compiling to another architecture.
+     -->
+     <property name="build.arch" value="${env.LWJGL_BUILD_ARCH}" if:set="env.LWJGL_BUILD_ARCH"/>
++    <condition property="build.arch" value="sparc64" unless:set="build.arch"> <!-- SPARC V9 reports os.arch=sparcv9 -->
++        <contains string="${os.arch}" substring="sparc"/>
++    </condition>
+     <condition property="build.arch" value="x64" else="x86" unless:set="build.arch"> <!-- Normalize os.arch -->
+         <contains string="${os.arch}" substring="64"/>
+     </condition>
+@@ -93,7 +96,7 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+     <condition property="platform.freebsd">
+         <os name="FreeBSD"/>
+     </condition>
+-    <condition property="platform.solaris">
++    <condition property="platform.sunos">
+         <os name="SunOS"/>
+     </condition>
+     <condition property="platform.macos">
+@@ -103,7 +106,7 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+     <property name="platform" value="windows" if:set="platform.windows"/>
+     <property name="platform" value="linux" if:set="platform.linux"/>
+     <property name="platform" value="freebsd" if:set="platform.freebsd"/>
+-    <property name="platform" value="solaris" if:set="platform.solaris"/>
++    <property name="platform" value="sunos" if:set="platform.sunos"/>
+     <property name="platform" value="macos" if:set="platform.macos"/>
+ 
+     <property name="platform.remote" value="macosx" if:set="platform.macos"/>
+diff --git a/config/sunos/build.xml b/config/sunos/build.xml
+new file mode 100644
+index 000000000..3755ce66f
+--- /dev/null
++++ b/config/sunos/build.xml
+@@ -0,0 +1,138 @@
++<!--
++  ~ Copyright LWJGL. All rights reserved.
++  ~ License terms: https://www.lwjgl.org/license
++  -->
++<project name="native-sunos" basedir="../.." xmlns:if="ant:if" xmlns:unless="ant:unless">
++    <import file="../build-definitions.xml"/>
++
++    <!-- Native compiler: CC from the environment, defaults to GCC from PATH. Only 64-bit (SPARC V9) is supported. -->
++    <condition property="sunos.cc" value="${env.CC}" else="gcc"><isset property="env.CC"/></condition>
++
++    <property name="module.lwjgl.rel" value="../../../../${module.lwjgl}"/>
++
++    <macrodef name="compile">
++        <attribute name="dest" default="${dest}"/>
++        <attribute name="flags" default=""/>
++        <attribute name="simple" default="false"/>
++        <element name="source" implicit="true" optional="true"/>
++        <sequential>
++            <mkdir dir="@{dest}"/>
++            <apply dir="@{dest}" executable="${sunos.cc}" dest="@{dest}" skipemptyfilesets="true" failonerror="true" parallel="true" taskname="Compiler">
++                <arg line="-c -std=gnu11"/>
++                <arg line="-m64"/>
++                <arg line="-O2 -fPIC @{flags} -pthread -DNDEBUG -DLWJGL_SUNOS -DLWJGL_${build.arch}"/>
++                <arg line="-D__EXTENSIONS__ -D_REENTRANT"/>
++
++                <arg value="-I${jni.headers}"/>
++                <arg value="-I${jni.headers}/solaris"/>
++
++                <arg value="-I${module.lwjgl.rel}/core/src/main/c"/>
++                <arg value="-I${module.lwjgl.rel}/core/src/main/c/${platform}"/>
++
++                <arg value="-I${src.main.rel}" if:true="@{simple}"/>
++
++                <source/>
++                <fileset dir="." includes="${src.generated}/*.c" if:true="@{simple}"/>
++
++                <regexpmapper from="(\w+)\.c$" to="\1.o"/>
++            </apply>
++        </sequential>
++    </macrodef>
++
++    <macrodef name="build">
++        <attribute name="module"/>
++        <attribute name="flags" default=""/>
++        <attribute name="simple" default="false"/>
++        <element name="beforeCompile" optional="true"/>
++        <element name="source" optional="true"/>
++        <element name="link" optional="true"/>
++        <sequential>
++            <local name="src.main"/>
++            <local name="src.main.rel"/>
++            <local name="src.generated"/>
++            <property name="src.main" location="${module.lwjgl}/@{module}/src/main/c" relative="true"/>
++            <property name="src.main.rel" value="${module.lwjgl.rel}/@{module}/src/main/c"/>
++            <property name="src.generated" location="${module.lwjgl}/@{module}/src/generated/c" relative="true"/>
++
++            <local name="name"/>
++            <condition property="name" value="lwjgl" else="lwjgl_@{module}">
++                <equals arg1="@{module}" arg2="core"/>
++            </condition>
++
++            <local name="dest"/>
++            <property name="dest" value="${bin.native}/@{module}"/>
++
++            <beforeCompile/>
++            <compile flags="@{flags}" simple="@{simple}">
++                <source/>
++            </compile>
++
++            <echo message="Linking ${name}" taskname="${sunos.cc}"/>
++            <mkdir dir="${lib}"/>
++            <apply executable="${sunos.cc}" failonerror="true" parallel="true" taskname="Linker">
++                <srcfile/>
++                <arg value="-shared"/>
++                <arg value="-m64"/>
++
++                <arg line="-O2 -fPIC -pthread -o ${lib}/lib${name}.so"/>
++
++                <fileset dir="${dest}" includes="*.o"/>
++                <link/>
++            </apply>
++        </sequential>
++    </macrodef>
++
++    <macrodef name="build_simple">
++        <attribute name="module"/>
++        <sequential>
++            <build module="@{module}" simple="true" if:true="${binding.@{module}}"/>
++        </sequential>
++    </macrodef>
++
++    <target name="compile-native-platform">
++        <fail message="SunOS requires LWJGL_SUNOS_LIBFFI_A to point to a libffi static archive (-fPIC, 64-bit) for the selected architecture." unless="env.LWJGL_SUNOS_LIBFFI_A"/>
++
++        <!-- The libffi build tree/prefix keeps ffi.h in an include directory next to the directory that contains libffi.a. -->
++        <dirname property="libffi.dir" file="${env.LWJGL_SUNOS_LIBFFI_A}"/>
++
++        <parallel threadsPerProcessor="2">
++
++        <!-- CORE -->
++        <build module="core" flags="-Wall -Wextra">
++            <source>
++                <arg value="-I${src.main.rel}/dyncall"/>
++                <arg value="-I${libffi.dir}/../include"/>
++                <arg value="-I${env.LWJGL_SUNOS_LIBFFI_INCLUDE}" if:set="env.LWJGL_SUNOS_LIBFFI_INCLUDE"/>
++                <fileset dir=".">
++                    <include name="${src.main}/*.c"/>
++                    <include name="${src.main}/${platform}/dyncall_ffi.c"/>
++                    <include name="${src.generated}/*.c"/>
++                    <include name="${src.generated}/linux/*.c"/> <!-- dlfcn: SunOS uses the org.lwjgl.system.linux bindings -->
++                </fileset>
++            </source>
++            <link>
++                <arg value="${env.LWJGL_SUNOS_LIBFFI_A}"/>
++                <arg value="-ldl"/>
++            </link>
++        </build>
++
++        <!-- OpenGL -->
++        <build_simple module="opengl"/>
++
++        <!-- OpenGL ES -->
++        <build_simple module="opengles"/>
++
++        <!-- stb -->
++        <build module="stb" if:true="${binding.stb}">
++            <source>
++                <arg value="-isystem${src.main.rel}"/>
++                <fileset dir="." includes="${src.generated}/*.c"/>
++            </source>
++            <link>
++                <arg value="-lm"/>
++            </link>
++        </build>
++
++        </parallel>
++    </target>
++</project>
+diff --git a/modules/lwjgl/core/src/main/c/common_tools.h b/modules/lwjgl/core/src/main/c/common_tools.h
+index 4d69fa80a..e7373067b 100644
+--- a/modules/lwjgl/core/src/main/c/common_tools.h
++++ b/modules/lwjgl/core/src/main/c/common_tools.h
+@@ -13,6 +13,9 @@
+ #ifdef LWJGL_MACOS
+     #include "macOSConfig.h"
+ #endif
++#ifdef LWJGL_SUNOS
++    #include "SunOSConfig.h"
++#endif
+ 
+ #ifndef DISABLE_WARNINGS
+     #define DISABLE_WARNINGS()
+diff --git a/modules/lwjgl/core/src/main/c/sunos/LinuxLWJGL.h b/modules/lwjgl/core/src/main/c/sunos/LinuxLWJGL.h
+new file mode 100644
+index 000000000..c294fa76a
+--- /dev/null
++++ b/modules/lwjgl/core/src/main/c/sunos/LinuxLWJGL.h
+@@ -0,0 +1,10 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++#pragma once
++
++/*
++ * SunOS reuses the generated org.lwjgl.system.linux bindings (dlfcn and X11), whose native code includes this header
++ * on Linux to pull in the Xlib headers. Those headers are not needed to build the dlfcn wrappers, so this is a stub.
++ */
+diff --git a/modules/lwjgl/core/src/main/c/sunos/SunOSConfig.h b/modules/lwjgl/core/src/main/c/sunos/SunOSConfig.h
+new file mode 100644
+index 000000000..a0415bd52
+--- /dev/null
++++ b/modules/lwjgl/core/src/main/c/sunos/SunOSConfig.h
+@@ -0,0 +1,14 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++
++#include <stddef.h>
++#include <inttypes.h>
++
++#define DISABLE_WARNINGS() \
++    _Pragma("GCC diagnostic push") \
++    _Pragma("GCC diagnostic ignored \"-Wunused-parameter\"")
++
++#define ENABLE_WARNINGS() \
++    _Pragma("GCC diagnostic pop")
+diff --git a/modules/lwjgl/core/src/main/c/sunos/dyncall_ffi.c b/modules/lwjgl/core/src/main/c/sunos/dyncall_ffi.c
+new file mode 100644
+index 000000000..624ef7565
+--- /dev/null
++++ b/modules/lwjgl/core/src/main/c/sunos/dyncall_ffi.c
+@@ -0,0 +1,602 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++
++/*
++ * libffi based implementation of the subset of the dyncall API that LWJGL 3.1.x uses (dyncall, dyncallback and dynload).
++ *
++ * The prebuilt dyncall static libraries that LWJGL downloads for its other platforms do not exist for SunOS (SPARC V9), so this file provides the same entry
++ * points on top of a static libffi, which is linked into liblwjgl.so.
++ *
++ * Differences from dyncall:
++ * - struct support (dcNewStruct, dcDefineStruct, dcArgStruct, dcCallStruct, ...) is not implemented; the functions are safe no-ops.
++ * - dcbInitCallback (callback in caller provided memory) is not implemented.
++ * - dlSyms* (library symbol enumeration) is not implemented.
++ * - callback signatures must list the argument types (as LWJGL's do), because libffi needs them when the callback is created.
++ */
++#include <dlfcn.h>
++#include <pthread.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <ffi.h>
++
++#include "dyncall.h"
++#include "dyncall_callback.h"
++#include "dynload.h"
++
++#define DCFFI_ERROR_NONE             0
++#define DCFFI_ERROR_UNSUPPORTED_MODE (-1)
++
++/* ------------------------------------------------------------------------------------------------------------------ */
++/* dyncall: call VM                                                                                                   */
++/* ------------------------------------------------------------------------------------------------------------------ */
++
++typedef union DCFFIValue {
++    signed char c;
++    short       s;
++    int         i;
++    long        j;
++    long long   l;
++    float       f;
++    double      d;
++    void*       p;
++} DCFFIValue;
++
++struct DCCallVM_ {
++    DCFFIValue* store;
++    ffi_type**  types;
++    void**      values;
++    size_t      count;
++    size_t      capacity;
++    int         error;
++};
++
++DCCallVM* dcNewCallVM(DCsize size) {
++    DCCallVM* vm = (DCCallVM*)calloc(1, sizeof(DCCallVM));
++    (void)size;
++    return vm;
++}
++
++void dcFree(DCCallVM* vm) {
++    if (vm == NULL) {
++        return;
++    }
++    free(vm->store);
++    free(vm->types);
++    free(vm->values);
++    free(vm);
++}
++
++void dcReset(DCCallVM* vm) {
++    vm->count = 0;
++    vm->error = DCFFI_ERROR_NONE;
++}
++
++void dcMode(DCCallVM* vm, DCint mode) {
++    switch (mode) {
++        case DC_CALL_C_DEFAULT:
++        case DC_CALL_C_ELLIPSIS:
++        case DC_CALL_C_ELLIPSIS_VARARGS:
++        case DC_CALL_C_SPARC64:
++            vm->error = DCFFI_ERROR_NONE;
++            break;
++        default:
++            vm->error = DCFFI_ERROR_UNSUPPORTED_MODE;
++    }
++}
++
++DCint dcGetError(DCCallVM* vm) {
++    return vm->error;
++}
++
++static DCFFIValue* pushArg(DCCallVM* vm, ffi_type* type) {
++    if (vm->count == vm->capacity) {
++        size_t      capacity = vm->capacity == 0 ? 16 : vm->capacity * 2;
++        DCFFIValue* store    = (DCFFIValue*)realloc(vm->store, capacity * sizeof(DCFFIValue));
++        ffi_type**  types;
++        void**      values;
++
++        if (store == NULL) {
++            return NULL;
++        }
++        vm->store = store;
++
++        types = (ffi_type**)realloc(vm->types, capacity * sizeof(ffi_type*));
++        if (types == NULL) {
++            return NULL;
++        }
++        vm->types = types;
++
++        values = (void**)realloc(vm->values, capacity * sizeof(void*));
++        if (values == NULL) {
++            return NULL;
++        }
++        vm->values   = values;
++        vm->capacity = capacity;
++    }
++
++    vm->types[vm->count] = type;
++    return &vm->store[vm->count++];
++}
++
++#define DEFINE_ARG(Name, Type, Field, FFIType) \
++    void dcArg##Name(DCCallVM* vm, Type value) { \
++        DCFFIValue* v = pushArg(vm, &FFIType); \
++        if (v != NULL) { \
++            memset(v, 0, sizeof(DCFFIValue)); \
++            v->Field = value; \
++        } \
++    }
++
++DEFINE_ARG(Bool,     DCbool,     i, ffi_type_sint)
++DEFINE_ARG(Char,     DCchar,     c, ffi_type_schar)
++DEFINE_ARG(Short,    DCshort,    s, ffi_type_sshort)
++DEFINE_ARG(Int,      DCint,      i, ffi_type_sint)
++DEFINE_ARG(Long,     DClong,     j, ffi_type_slong)
++DEFINE_ARG(LongLong, DClonglong, l, ffi_type_sint64)
++DEFINE_ARG(Float,    DCfloat,    f, ffi_type_float)
++DEFINE_ARG(Double,   DCdouble,   d, ffi_type_double)
++DEFINE_ARG(Pointer,  DCpointer,  p, ffi_type_pointer)
++
++void dcArgStruct(DCCallVM* vm, DCstruct* s, DCpointer value) {
++    (void)s;
++    (void)value;
++    vm->error = DCFFI_ERROR_UNSUPPORTED_MODE;
++}
++
++static void doCall(DCCallVM* vm, DCpointer funcptr, ffi_type* rtype, void* rvalue) {
++    ffi_cif cif;
++    size_t  i;
++
++    for (i = 0; i < vm->count; i++) {
++        vm->values[i] = &vm->store[i];
++    }
++
++    if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned int)vm->count, rtype, vm->types) != FFI_OK) {
++        vm->error = DCFFI_ERROR_UNSUPPORTED_MODE;
++        return;
++    }
++
++    ffi_call(&cif, FFI_FN(funcptr), rvalue, vm->values);
++}
++
++void dcCallVoid(DCCallVM* vm, DCpointer funcptr) {
++    ffi_arg r;
++    doCall(vm, funcptr, &ffi_type_void, &r);
++}
++
++#define DEFINE_CALL_INT(Name, Type, FFIType) \
++    Type dcCall##Name(DCCallVM* vm, DCpointer funcptr) { \
++        ffi_arg r = 0; \
++        doCall(vm, funcptr, &FFIType, &r); \
++        return (Type)r; \
++    }
++
++DEFINE_CALL_INT(Bool,     DCbool,     ffi_type_sint)
++DEFINE_CALL_INT(Char,     DCchar,     ffi_type_schar)
++DEFINE_CALL_INT(Short,    DCshort,    ffi_type_sshort)
++DEFINE_CALL_INT(Int,      DCint,      ffi_type_sint)
++DEFINE_CALL_INT(Long,     DClong,     ffi_type_slong)
++
++DClonglong dcCallLongLong(DCCallVM* vm, DCpointer funcptr) {
++    int64_t r = 0;
++    doCall(vm, funcptr, &ffi_type_sint64, &r);
++    return (DClonglong)r;
++}
++
++DCfloat dcCallFloat(DCCallVM* vm, DCpointer funcptr) {
++    float r = 0;
++    doCall(vm, funcptr, &ffi_type_float, &r);
++    return r;
++}
++
++DCdouble dcCallDouble(DCCallVM* vm, DCpointer funcptr) {
++    double r = 0;
++    doCall(vm, funcptr, &ffi_type_double, &r);
++    return r;
++}
++
++DCpointer dcCallPointer(DCCallVM* vm, DCpointer funcptr) {
++    void* r = NULL;
++    doCall(vm, funcptr, &ffi_type_pointer, &r);
++    return r;
++}
++
++void dcCallStruct(DCCallVM* vm, DCpointer funcptr, DCstruct* s, DCpointer returnValue) {
++    (void)funcptr;
++    (void)s;
++    (void)returnValue;
++    vm->error = DCFFI_ERROR_UNSUPPORTED_MODE;
++}
++
++/* ------------------------------------------------------------------------------------------------------------------ */
++/* dyncall: struct types (not supported)                                                                              */
++/* ------------------------------------------------------------------------------------------------------------------ */
++
++DCstruct* dcNewStruct(DCsize fieldCount, DCint alignment) {
++    (void)fieldCount;
++    (void)alignment;
++    return NULL;
++}
++
++void dcStructField(DCstruct* s, DCint type, DCint alignment, DCsize arrayLength) {
++    (void)s;
++    (void)type;
++    (void)alignment;
++    (void)arrayLength;
++}
++
++void dcSubStruct(DCstruct* s, DCsize fieldCount, DCint alignment, DCsize arrayLength) {
++    (void)s;
++    (void)fieldCount;
++    (void)alignment;
++    (void)arrayLength;
++}
++
++void dcCloseStruct(DCstruct* s) {
++    (void)s;
++}
++
++DCsize dcStructSize(DCstruct* s) {
++    (void)s;
++    return 0;
++}
++
++DCsize dcStructAlignment(DCstruct* s) {
++    (void)s;
++    return 0;
++}
++
++void dcFreeStruct(DCstruct* s) {
++    (void)s;
++}
++
++DCstruct* dcDefineStruct(const char* signature) {
++    (void)signature;
++    return NULL;
++}
++
++/* ------------------------------------------------------------------------------------------------------------------ */
++/* dyncallback                                                                                                        */
++/* ------------------------------------------------------------------------------------------------------------------ */
++
++struct DCArgs {
++    ffi_cif*     cif;
++    void**       values;
++    unsigned int index;
++};
++
++typedef struct DCFFICallback {
++    struct DCFFICallback* next;
++    ffi_closure*          closure;
++    void*                 code;
++    ffi_cif               cif;
++    ffi_type**            argTypes;
++    DCCallbackHandler*    handler;
++    void*                 userdata;
++} DCFFICallback;
++
++#define CALLBACK_BUCKETS 64
++
++static DCFFICallback*  callbacks[CALLBACK_BUCKETS];
++static pthread_mutex_t callbacksLock = PTHREAD_MUTEX_INITIALIZER;
++
++#define CALLBACK_BUCKET(code) (((uintptr_t)(code) >> 4) % CALLBACK_BUCKETS)
++
++static ffi_type* sigToType(char c) {
++    switch (c) {
++        case 'v': return &ffi_type_void;
++        case 'B': return &ffi_type_sint; /* DCbool is an int */
++        case 'c': return &ffi_type_schar;
++        case 'C': return &ffi_type_uchar;
++        case 's': return &ffi_type_sshort;
++        case 'S': return &ffi_type_ushort;
++        case 'i': return &ffi_type_sint;
++        case 'I': return &ffi_type_uint;
++        case 'j': return &ffi_type_slong;
++        case 'J': return &ffi_type_ulong;
++        case 'l': return &ffi_type_sint64;
++        case 'L': return &ffi_type_uint64;
++        case 'f': return &ffi_type_float;
++        case 'd': return &ffi_type_double;
++        case 'p':
++        case 'Z': return &ffi_type_pointer;
++        default:  return NULL;
++    }
++}
++
++static void closureDispatch(ffi_cif* cif, void* ret, void** args, void* userdata) {
++    DCFFICallback* cb = (DCFFICallback*)userdata;
++    struct DCArgs  a;
++    DCValue        r;
++    char           type;
++
++    a.cif    = cif;
++    a.values = args;
++    a.index  = 0;
++    memset(&r, 0, sizeof(r));
++
++    type = cb->handler((DCCallback*)cb->code, &a, &r, cb->userdata);
++
++    /* integers narrower than ffi_arg must be returned widened to ffi_arg */
++    switch (type) {
++        case 'B': *(ffi_arg*)ret  = r.C != 0 ? 1 : 0; break; /* LWJGL stores a jboolean (1 byte) at the start of the value */
++        case 'c': *(ffi_sarg*)ret = r.c; break;
++        case 'C': *(ffi_arg*)ret  = r.C; break;
++        case 's': *(ffi_sarg*)ret = r.s; break;
++        case 'S': *(ffi_arg*)ret  = r.S; break;
++        case 'i': *(ffi_sarg*)ret = r.i; break;
++        case 'I': *(ffi_arg*)ret  = r.I; break;
++        case 'j': *(ffi_sarg*)ret = r.j; break;
++        case 'J': *(ffi_arg*)ret  = r.J; break;
++        case 'l': *(int64_t*)ret  = (int64_t)r.l; break;
++        case 'L': *(uint64_t*)ret = (uint64_t)r.L; break;
++        case 'f': *(float*)ret    = r.f; break;
++        case 'd': *(double*)ret   = r.d; break;
++        case 'p':
++        case 'Z': *(void**)ret    = r.p; break;
++        default: break;
++    }
++}
++
++static void freeCallback(DCFFICallback* cb) {
++    if (cb->closure != NULL) {
++        ffi_closure_free(cb->closure);
++    }
++    free(cb->argTypes);
++    free(cb);
++}
++
++DCCallback* dcbNewCallback(const char* signature, DCCallbackHandler* funcptr, void* userdata) {
++    const char*    p = signature;
++    const char*    end;
++    size_t         nargs = 0;
++    size_t         i;
++    ffi_type*      rtype;
++    DCFFICallback* cb;
++    void*          code = NULL;
++
++    if (p == NULL) {
++        return NULL;
++    }
++
++    if (*p == '_') { /* calling convention prefix, ignored */
++        p += 2;
++    }
++    if (*p == '(') { /* LWJGL signatures are enclosed in parentheses, dyncall ignores the opening one */
++        p++;
++    }
++
++    /* count the arguments */
++    for (end = p; *end != ')' && *end != '\0'; end++) {
++        if (*end == '_') { /* calling convention switch, ignored */
++            end++;
++            if (*end == '\0') {
++                return NULL;
++            }
++        } else if (*end != '.') { /* start of varargs, ignored */
++            if (sigToType(*end) == NULL || *end == 'v') {
++                return NULL;
++            }
++            nargs++;
++        }
++    }
++    if (*end != ')') {
++        return NULL;
++    }
++
++    rtype = sigToType(end[1]);
++    if (rtype == NULL) {
++        return NULL;
++    }
++
++    cb = (DCFFICallback*)calloc(1, sizeof(DCFFICallback));
++    if (cb == NULL) {
++        return NULL;
++    }
++    cb->argTypes = (ffi_type**)calloc(nargs == 0 ? 1 : nargs, sizeof(ffi_type*));
++    if (cb->argTypes == NULL) {
++        free(cb);
++        return NULL;
++    }
++
++    for (i = 0; p < end; p++) {
++        if (*p == '_') {
++            p++;
++        } else if (*p != '.') {
++            cb->argTypes[i++] = sigToType(*p);
++        }
++    }
++
++    cb->handler  = funcptr;
++    cb->userdata = userdata;
++
++    cb->closure = (ffi_closure*)ffi_closure_alloc(sizeof(ffi_closure), &code);
++    if (cb->closure == NULL) {
++        freeCallback(cb);
++        return NULL;
++    }
++    cb->code = code;
++
++    if (ffi_prep_cif(&cb->cif, FFI_DEFAULT_ABI, (unsigned int)nargs, rtype, cb->argTypes) != FFI_OK ||
++        ffi_prep_closure_loc(cb->closure, &cb->cif, closureDispatch, cb, code) != FFI_OK) {
++        freeCallback(cb);
++        return NULL;
++    }
++
++    pthread_mutex_lock(&callbacksLock);
++    cb->next                         = callbacks[CALLBACK_BUCKET(code)];
++    callbacks[CALLBACK_BUCKET(code)] = cb;
++    pthread_mutex_unlock(&callbacksLock);
++
++    return (DCCallback*)code;
++}
++
++void dcbInitCallback(DCCallback* pcb, const char* signature, DCCallbackHandler* handler, void* userdata) {
++    /* not supported: libffi closures cannot be created in caller-provided memory */
++    (void)pcb;
++    (void)signature;
++    (void)handler;
++    (void)userdata;
++}
++
++void dcbFreeCallback(DCCallback* pcb) {
++    DCFFICallback** link;
++    DCFFICallback*  cb = NULL;
++
++    pthread_mutex_lock(&callbacksLock);
++    for (link = &callbacks[CALLBACK_BUCKET(pcb)]; *link != NULL; link = &(*link)->next) {
++        if ((*link)->code == (void*)pcb) {
++            cb    = *link;
++            *link = cb->next;
++            break;
++        }
++    }
++    pthread_mutex_unlock(&callbacksLock);
++
++    if (cb != NULL) {
++        freeCallback(cb);
++    }
++}
++
++void* dcbGetUserData(DCCallback* pcb) {
++    DCFFICallback* cb;
++    void*          userdata = NULL;
++
++    pthread_mutex_lock(&callbacksLock);
++    for (cb = callbacks[CALLBACK_BUCKET(pcb)]; cb != NULL; cb = cb->next) {
++        if (cb->code == (void*)pcb) {
++            userdata = cb->userdata;
++            break;
++        }
++    }
++    pthread_mutex_unlock(&callbacksLock);
++
++    return userdata;
++}
++
++/* Reads the next argument, converted according to the type it was declared with in the callback signature. */
++static int nextArg(DCArgs* args, long long* i, double* d) {
++    ffi_type* type;
++    void*     v;
++
++    *i = 0;
++    *d = 0;
++    if (args->index >= args->cif->nargs) {
++        return 0;
++    }
++
++    type = args->cif->arg_types[args->index];
++    v    = args->values[args->index];
++    args->index++;
++
++    switch (type->type) {
++        case FFI_TYPE_SINT8:   *i = *(int8_t*)v;                 break;
++        case FFI_TYPE_UINT8:   *i = *(uint8_t*)v;                break;
++        case FFI_TYPE_SINT16:  *i = *(int16_t*)v;                break;
++        case FFI_TYPE_UINT16:  *i = *(uint16_t*)v;               break;
++        case FFI_TYPE_SINT32:  *i = *(int32_t*)v;                break;
++        case FFI_TYPE_UINT32:  *i = *(uint32_t*)v;               break;
++        case FFI_TYPE_SINT64:  *i = *(int64_t*)v;                break;
++        case FFI_TYPE_UINT64:  *i = (long long)*(uint64_t*)v;    break;
++        case FFI_TYPE_POINTER: *i = (long long)(intptr_t)*(void**)v; break;
++        case FFI_TYPE_FLOAT:   *d = *(float*)v;                  return 1;
++        case FFI_TYPE_DOUBLE:  *d = *(double*)v;                 return 1;
++        default: break;
++    }
++    return 1;
++}
++
++#define DEFINE_ARG_INT(Name, Type) \
++    Type dcbArg##Name(DCArgs* args) { \
++        long long i; \
++        double    d; \
++        nextArg(args, &i, &d); \
++        return (Type)i; \
++    }
++
++DCbool dcbArgBool(DCArgs* args) {
++    long long i;
++    double    d;
++    nextArg(args, &i, &d);
++    return i != 0;
++}
++
++DEFINE_ARG_INT(Char,      DCchar)
++DEFINE_ARG_INT(Short,     DCshort)
++DEFINE_ARG_INT(Int,       DCint)
++DEFINE_ARG_INT(Long,      DClong)
++DEFINE_ARG_INT(LongLong,  DClonglong)
++DEFINE_ARG_INT(UChar,     DCuchar)
++DEFINE_ARG_INT(UShort,    DCushort)
++DEFINE_ARG_INT(UInt,      DCuint)
++DEFINE_ARG_INT(ULong,     DCulong)
++DEFINE_ARG_INT(ULongLong, DCulonglong)
++
++DCpointer dcbArgPointer(DCArgs* args) {
++    long long i;
++    double    d;
++    nextArg(args, &i, &d);
++    return (DCpointer)(intptr_t)i;
++}
++
++DCfloat dcbArgFloat(DCArgs* args) {
++    long long i;
++    double    d;
++    nextArg(args, &i, &d);
++    return (DCfloat)d;
++}
++
++DCdouble dcbArgDouble(DCArgs* args) {
++    long long i;
++    double    d;
++    nextArg(args, &i, &d);
++    return d;
++}
++
++/* ------------------------------------------------------------------------------------------------------------------ */
++/* dynload                                                                                                            */
++/* ------------------------------------------------------------------------------------------------------------------ */
++
++DLLib* dlLoadLibrary(const char* libpath) {
++    return (DLLib*)dlopen(libpath, RTLD_LAZY | RTLD_LOCAL);
++}
++
++void dlFreeLibrary(DLLib* pLib) {
++    if (pLib != NULL) {
++        dlclose((void*)pLib);
++    }
++}
++
++void* dlFindSymbol(DLLib* pLib, const char* pSymbolName) {
++    return dlsym(pLib == NULL ? RTLD_DEFAULT : (void*)pLib, pSymbolName);
++}
++
++DLSyms* dlSymsInit(const char* libPath) {
++    (void)libPath;
++    return NULL;
++}
++
++void dlSymsCleanup(DLSyms* pSyms) {
++    (void)pSyms;
++}
++
++int dlSymsCount(DLSyms* pSyms) {
++    (void)pSyms;
++    return 0;
++}
++
++const char* dlSymsName(DLSyms* pSyms, int index) {
++    (void)pSyms;
++    (void)index;
++    return NULL;
++}
++
++const char* dlSymsNameFromValue(DLSyms* pSyms, void* value) {
++    (void)pSyms;
++    (void)value;
++    return NULL;
++}
+diff --git a/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java b/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java
+index 63a98538c..38f04aae1 100644
+--- a/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java
+@@ -121,6 +121,7 @@ public final class APIUtil {
+             case WINDOWS:
+                 return new WindowsLibrary(name);
+             case LINUX:
++            case SUNOS:
+                 return new LinuxLibrary(name);
+             case MACOSX:
+                 return MacOSXLibrary.create(name);
+diff --git a/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java b/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
+index dbf016e33..af2e6e07e 100644
+--- a/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
+@@ -20,6 +20,18 @@ public enum Platform {
+             return System.mapLibraryName(name);
+         }
+     },
++    SUNOS("SunOS") {
++        private final Pattern SO = Pattern.compile("(?:^|/)lib\\w+[.]so(?:[.]\\d+){0,3}$");
++
++        @Override
++        String mapLibraryName(String name) {
++            if (SO.matcher(name).find()) {
++                return name;
++            }
++
++            return System.mapLibraryName(name);
++        }
++    },
+     MACOSX("Mac OS X") {
+         private final Pattern DYLIB = Pattern.compile("(?:^|/)lib\\w+[.]dylib$");
+ 
+@@ -49,7 +61,9 @@ public enum Platform {
+         String osName = System.getProperty("os.name");
+         if (osName.startsWith("Windows")) {
+             PLATFORM = Platform.WINDOWS;
+-        } else if (osName.startsWith("Linux") || osName.startsWith("FreeBSD") || osName.startsWith("SunOS") || osName.startsWith("Unix")) {
++        } else if (osName.startsWith("SunOS") || osName.startsWith("Solaris")) {
++            PLATFORM = Platform.SUNOS;
++        } else if (osName.startsWith("Linux") || osName.startsWith("FreeBSD") || osName.startsWith("Unix")) {
+             PLATFORM = Platform.LINUX;
+         } else if (osName.startsWith("Mac OS X") || osName.startsWith("Darwin")) {
+             PLATFORM = Platform.MACOSX;
+diff --git a/modules/lwjgl/core/src/main/kotlin/core/linux/templates/X11.kt b/modules/lwjgl/core/src/main/kotlin/core/linux/templates/X11.kt
+index 20bc99891..1092367a6 100644
+--- a/modules/lwjgl/core/src/main/kotlin/core/linux/templates/X11.kt
++++ b/modules/lwjgl/core/src/main/kotlin/core/linux/templates/X11.kt
+@@ -10,7 +10,11 @@ import core.linux.*
+ val X11 = "X11".nativeClass(
+     Module.CORE_LINUX,
+     nativeSubPath = "linux",
+-    binding = simpleBinding(Module.CORE_LINUX, "X11")
++    binding = simpleBinding(
++        Module.CORE_LINUX,
++        "X11",
++        libraryExpression = """Platform.get() == Platform.SUNOS ? "libX11.so.4" : "X11""""
++    )
+ ) {
+     documentation = "Native bindings to libX11."
+ 
+diff --git a/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java b/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java
+index e11bb5e20..e8fee7838 100644
+--- a/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java
++++ b/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java
+@@ -55,6 +55,7 @@ public final class EGL {
+         SharedLibrary EGL;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 EGL = Library.loadNative(EGL.class, Configuration.EGL_LIBRARY_NAME, "libEGL.so.1");
+                 break;
+             case MACOSX:
+diff --git a/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java b/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java
+index 7ea4c3419..2dad3690f 100644
+--- a/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java
++++ b/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java
+@@ -56,6 +56,7 @@ public final class ALC {
+         String libName;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+             case MACOSX:
+                 libName = "openal";
+                 break;
+diff --git a/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java b/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java
+index 50187f36c..cd39f1297 100644
+--- a/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java
++++ b/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java
+@@ -53,6 +53,7 @@ public final class CL {
+         SharedLibrary CL;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+             case WINDOWS:
+                 CL = Library.loadNative(CL.class, Configuration.OPENCL_LIBRARY_NAME, "OpenCL");
+                 break;
+diff --git a/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java b/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java
+index e456403c3..605ac4aa0 100644
+--- a/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java
++++ b/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java
+@@ -98,6 +98,7 @@ public final class GL {
+         SharedLibrary GL;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 GL = Library.loadNative(GL.class, Configuration.OPENGL_LIBRARY_NAME, "libGL.so.1", "libGL.so");
+                 break;
+             case MACOSX:
+@@ -160,6 +161,7 @@ public final class GL {
+                     };
+                     break;
+                 case LINUX:
++                case SUNOS:
+                     functionProvider = new SharedLibraryGL(OPENGL) {
+                         private final long glXGetProcAddress;
+ 
+diff --git a/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java b/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java
+index 2f04541c3..23467c245 100644
+--- a/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java
++++ b/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java
+@@ -81,6 +81,7 @@ public final class GLES {
+         SharedLibrary GLES;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 GLES = Library.loadNative(GLES.class, Configuration.OPENGLES_LIBRARY_NAME, "libGLESv2.so.2");
+                 break;
+             case MACOSX:
+diff --git a/modules/lwjgl/stb/src/main/kotlin/stb/templates/stb_vorbis.kt b/modules/lwjgl/stb/src/main/kotlin/stb/templates/stb_vorbis.kt
+index e0f392375..d7cfb3e25 100644
+--- a/modules/lwjgl/stb/src/main/kotlin/stb/templates/stb_vorbis.kt
++++ b/modules/lwjgl/stb/src/main/kotlin/stb/templates/stb_vorbis.kt
+@@ -9,7 +9,7 @@ import stb.*
+ 
+ val stb_vorbis = "STBVorbis".nativeClass(Module.STB, prefixMethod = "stb_vorbis_", prefixConstant = "VORBIS_", library = STB_LIBRARY) {
+     includeSTBAPI(
+-        """#ifdef LWJGL_LINUX
++        """#if defined(LWJGL_LINUX) || defined(LWJGL_SUNOS)
+     #include <alloca.h>
+ #endif
+ #include "stb_vorbis.c"""")
+diff --git a/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java b/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java
+index c46810105..225b423ba 100644
+--- a/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java
++++ b/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java
+@@ -48,6 +48,7 @@ public final class VK {
+         SharedLibrary VK;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 VK = Library.loadNative(VK.class, Configuration.VULKAN_LIBRARY_NAME, "libvulkan.so.1");
+                 break;
+             case WINDOWS:

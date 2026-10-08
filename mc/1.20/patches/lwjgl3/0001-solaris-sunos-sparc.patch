@@ -1,0 +1,867 @@
+Subject: [PATCH] LWJGL 3.3.1: Solaris/illumos (SunOS) + SPARC V9 platform support
+
+diff --git a/build.xml b/build.xml
+index c02a9481e..a6ca3c6cc 100644
+--- a/build.xml
++++ b/build.xml
+@@ -227,6 +227,7 @@
+             <src path="${core.kotlin.path}/libffi"/>
+             <src path="${core.kotlin.path}/linux"/>
+             <src path="${core.kotlin.path}/macos"/>
++            <src path="${core.kotlin.path}/sunos"/>
+             <src path="${core.kotlin.path}/templates"/>
+             <src path="${core.kotlin.path}/windows"/>
+ 
+diff --git a/config/build-definitions.xml b/config/build-definitions.xml
+index 0c5045e13..1cec42fae 100644
+--- a/config/build-definitions.xml
++++ b/config/build-definitions.xml
+@@ -16,7 +16,7 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+ 
+         By default, os.arch of the JVM that runs ANT is used, but this can be overridden for cross-compiling to another architecture.
+ 
+-        Valid values: x64, x86, arm64, arm32
++        Valid values: x64, x86, arm64, arm32, sparc64
+     -->
+     <property name="build.arch" value="${env.LWJGL_BUILD_ARCH}" if:set="env.LWJGL_BUILD_ARCH"/>
+ 
+@@ -25,6 +25,7 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+         <or>
+             <contains string="${os.arch}" substring="64"/>
+             <contains string="${os.arch}" substring="armv8"/>
++            <equals arg1="${os.arch}" arg2="sparcv9"/>
+         </or>
+     </condition>
+     <condition property="build.arch.arm" value="true">
+@@ -34,15 +35,22 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+             <contains string="${os.arch}"    substring="aarch64"/>
+         </or>
+     </condition>
++    <condition property="build.arch.sparc" value="true">
++        <or>
++            <contains string="${build.arch}" substring="sparc"/>
++            <contains string="${os.arch}"    substring="sparc"/>
++        </or>
++    </condition>
+ 
+     <!-- Normalize os.arch -->
+-    <condition property="build.arch" value="arm64" unless:set="build.arch"><and>     <isset property="build.arch.arm"/>      <istrue  value="${is64Bit}"/></and></condition>
+-    <condition property="build.arch" value="arm32" unless:set="build.arch"><and>     <isset property="build.arch.arm"/>      <isfalse value="${is64Bit}"/></and></condition>
+-    <condition property="build.arch" value="x64"   unless:set="build.arch"><and><not><isset property="build.arch.arm"/></not><istrue  value="${is64Bit}"/></and></condition>
+-    <condition property="build.arch" value="x86"   unless:set="build.arch"><and><not><isset property="build.arch.arm"/></not><isfalse value="${is64Bit}"/></and></condition>
+-
+-    <fail message="Invalid or unsupported build architecture: ${build.arch}. Supported: x64, x86, arm64, arm32">
+-        <condition><not><matches string="${build.arch}" pattern="^(x64|x86|arm64|arm32)$"/></not></condition>
++    <condition property="build.arch" value="arm64"   unless:set="build.arch"><and>     <isset property="build.arch.arm"/>      <istrue  value="${is64Bit}"/></and></condition>
++    <condition property="build.arch" value="arm32"   unless:set="build.arch"><and>     <isset property="build.arch.arm"/>      <isfalse value="${is64Bit}"/></and></condition>
++    <condition property="build.arch" value="sparc64" unless:set="build.arch"><and>     <isset property="build.arch.sparc"/>    <istrue  value="${is64Bit}"/></and></condition>
++    <condition property="build.arch" value="x64"     unless:set="build.arch"><and><not><isset property="build.arch.arm"/></not><not><isset property="build.arch.sparc"/></not><istrue  value="${is64Bit}"/></and></condition>
++    <condition property="build.arch" value="x86"     unless:set="build.arch"><and><not><isset property="build.arch.arm"/></not><not><isset property="build.arch.sparc"/></not><isfalse value="${is64Bit}"/></and></condition>
++
++    <fail message="Invalid or unsupported build architecture: ${build.arch}. Supported: x64, x86, arm64, arm32, sparc64">
++        <condition><not><matches string="${build.arch}" pattern="^(x64|x86|arm64|arm32|sparc64)$"/></not></condition>
+     </fail>
+ 
+     <property name="build.arch.${build.arch}" value="true"/>
+@@ -114,6 +122,9 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+     <condition property="platform.linux">
+         <os name="Linux"/>
+     </condition>
++    <condition property="platform.sunos">
++        <os name="SunOS"/>
++    </condition>
+     <condition property="platform.macos">
+         <os name="Mac OS X"/>
+     </condition>
+@@ -122,6 +133,7 @@ This script is included in /build.xml and /config/update-dependencies.xml.
+     </condition>
+ 
+     <property name="platform" value="linux" if:set="platform.linux"/>
++    <property name="platform" value="sunos" if:set="platform.sunos"/>
+     <property name="platform" value="macos" if:set="platform.macos"/>
+     <property name="platform" value="windows" if:set="platform.windows"/>
+ 
+diff --git a/config/sunos/build.xml b/config/sunos/build.xml
+new file mode 100644
+index 000000000..fe173eca8
+--- /dev/null
++++ b/config/sunos/build.xml
+@@ -0,0 +1,182 @@
++<!--
++  ~ Copyright LWJGL. All rights reserved.
++  ~ License terms: https://www.lwjgl.org/license
++  -->
++<project name="native-sunos" basedir="../.." xmlns:if="ant:if" xmlns:unless="ant:unless">
++    <import file="../build-definitions.xml"/>
++
++    <!-- Native compilers: CC / CXX from the environment (e.g. gcc -m64), defaults to GCC from PATH. -->
++    <condition property="sunos.cc"  value="${env.CC}"  else="gcc"><isset property="env.CC"/></condition>
++    <condition property="sunos.cxx" value="${env.CXX}" else="g++"><isset property="env.CXX"/></condition>
++
++    <property name="module.lwjgl.rel" value="../../../../${module.lwjgl}"/>
++
++    <macrodef name="compile">
++        <attribute name="dest" default="${dest}"/>
++        <attribute name="lang" default="c"/>
++        <attribute name="flags" default=""/>
++        <attribute name="simple" default="false"/>
++        <attribute name="relative" default="true"/>
++        <element name="source" implicit="true" optional="true"/>
++        <sequential>
++            <local name="cpp"/>
++            <condition property="cpp"><not><equals arg1="@{lang}" arg2="c"/></not></condition>
++            <local name="cc"/>
++            <condition property="cc" value="${sunos.cc}" else="${sunos.cxx}"><equals arg1="@{lang}" arg2="c"/></condition>
++            <mkdir dir="@{dest}"/>
++            <apply dir="@{dest}" executable="${cc}" dest="@{dest}" skipemptyfilesets="true" failonerror="true" parallel="true" taskname="Compiler">
++                <arg line="-c" unless:set="cpp"/>
++                <arg line="-c -std=gnu++14" if:set="cpp"/>
++                <arg line="-m64" if:set="build.arch.x64"/>
++                <arg line="-m64" if:set="build.arch.sparc64"/>
++                <arg line="-O2 -fPIC @{flags} -pthread -DNDEBUG -DLWJGL_SUNOS -DLWJGL_${build.arch}"/>
++                <arg line="-D__EXTENSIONS__ -D_REENTRANT -D_FILE_OFFSET_BITS=64"/>
++
++                <arg value="-I${jni.headers}"/>
++                <arg value="-I${jni.headers}/solaris"/>
++
++                <arg value="-I${module.lwjgl.rel}/core/src/main/c"/>
++                <arg value="-I${module.lwjgl.rel}/core/src/main/c/${platform}"/>
++
++                <arg value="-I${src.main.rel}" if:true="@{simple}"/>
++
++                <source/>
++                <fileset dir="." includes="${src.generated}/*" if:true="@{simple}"/>
++
++                <regexpmapper from="([\w\-]+)\.(?:c|cc|cpp|S)$" to="\1.o"/>
++            </apply>
++        </sequential>
++    </macrodef>
++
++    <macrodef name="build">
++        <attribute name="module"/>
++        <attribute name="linker" default="gcc"/>
++        <attribute name="lang" default="c"/>
++        <attribute name="flags" default=""/>
++        <attribute name="simple" default="false"/>
++        <element name="beforeCompile" optional="true"/>
++        <element name="source" optional="true"/>
++        <element name="beforeLink" optional="true"/>
++        <element name="link" optional="true"/>
++        <sequential>
++            <local name="src.main"/>
++            <local name="src.main.rel"/>
++            <local name="src.generated"/>
++            <property name="src.main" location="${module.lwjgl}/@{module}/src/main/c" relative="true"/>
++            <property name="src.main.rel" value="${module.lwjgl.rel}/@{module}/src/main/c"/>
++            <property name="src.generated" location="${module.lwjgl}/@{module}/src/generated/c" relative="true"/>
++
++            <local name="name"/>
++            <condition property="name" value="lwjgl" else="lwjgl_@{module}">
++                <equals arg1="@{module}" arg2="core"/>
++            </condition>
++
++            <local name="dest"/>
++            <property name="dest" value="${bin.native}/@{module}"/>
++
++            <beforeCompile/>
++            <compile lang="@{lang}" flags="@{flags}" simple="@{simple}">
++                <source/>
++            </compile>
++
++            <local name="lib.arch"/>
++            <property name="lib.arch" value="${lib.native}/${module.@{module}.path}"/>
++
++            <local name="cc"/>
++            <condition property="cc" value="${sunos.cc}" else="${sunos.cxx}">
++                <and>
++                    <equals arg1="@{lang}" arg2="c"/>
++                    <equals arg1="@{linker}" arg2="gcc"/>
++                </and>
++            </condition>
++
++            <local name="static.runtime"/>
++            <condition property="static.runtime" value="true"><not><equals arg1="@{lang}" arg2="c"/></not></condition>
++
++            <echo message="Linking ${name}" taskname="${cc}"/>
++            <mkdir dir="${lib.arch}"/>
++            <beforeLink/>
++            <apply executable="${cc}" failonerror="true" parallel="true" taskname="Linker">
++                <srcfile/>
++                <arg value="-shared"/>
++                <arg value="-m64" if:set="build.arch.x64"/>
++                <arg value="-m64" if:set="build.arch.sparc64"/>
++
++                <arg line="-O2 -fPIC -pthread -o ${lib.arch}/lib${name}.so"/>
++                <arg line="-static-libgcc -static-libstdc++" if:set="static.runtime"/>
++
++                <fileset dir="${dest}" includes="*.o"/>
++                <link/>
++            </apply>
++
++            <delete file="${lib.native}/touch.txt" quiet="true"/>
++        </sequential>
++    </macrodef>
++
++    <macrodef name="build_simple">
++        <attribute name="module"/>
++        <sequential>
++            <build module="@{module}" simple="true" if:true="${binding.@{module}}"/>
++        </sequential>
++    </macrodef>
++
++    <target name="compile-native-platform">
++        <fail message="SunOS requires LWJGL_SUNOS_LIBFFI_A to point to a libffi static archive (-fPIC, 64-bit) for the selected architecture." unless="env.LWJGL_SUNOS_LIBFFI_A"/>
++
++        <parallel threadsPerProcessor="2">
++
++        <!-- CORE -->
++        <build module="core" flags="-Wall -Wextra">
++            <source>
++                <arg value="-I${src.main.rel}/libffi"/>
++                <arg value="-I${src.main.rel}/libffi/aarch64" if:set="build.arch.arm64"/>
++                <arg value="-I${src.main.rel}/libffi/sparc" if:set="build.arch.sparc64"/>
++                <arg value="-I${src.main.rel}/libffi/x86" if:set="build.arch.x64"/>
++                <arg value="-DX86_64" if:set="build.arch.x64"/> <!-- for libffi/x86/ffitarget.h -->
++                <fileset dir=".">
++                    <include name="${src.main}/*.c"/>
++                    <include name="${src.generated}/*.c"/>
++                    <include name="${src.generated}/${platform}/*.c"/>
++                </fileset>
++            </source>
++            <link>
++                <arg value="${env.LWJGL_SUNOS_LIBFFI_A}"/>
++                <arg value="-ldl"/>
++            </link>
++        </build>
++
++        <!-- OpenGL -->
++        <build module="opengl">
++            <source>
++                <arg value="-I${src.main.rel}"/>
++                <fileset dir="." includes="${src.generated}/*" excludes="${src.generated}/org_lwjgl_opengl_WGL.c"/>
++            </source>
++        </build>
++
++        <!-- OpenGL ES -->
++        <build_simple module="opengles"/>
++
++        <!-- stb -->
++        <build module="stb" if:true="${binding.stb}">
++            <source>
++                <arg value="-isystem${src.main.rel}"/>
++                <fileset dir="." includes="${src.generated}/*.c"/>
++            </source>
++            <link>
++                <arg value="-lm"/>
++            </link>
++        </build>
++
++        <!-- tiny file dialogs -->
++        <build module="tinyfd" simple="true" if:true="${binding.tinyfd}">
++            <beforeCompile>
++                <compile>
++                    <arg value="-I${src.main.rel}"/>
++                    <fileset dir="." includes="${src.main}/*.c"/>
++                </compile>
++            </beforeCompile>
++        </build>
++
++        </parallel>
++    </target>
++</project>
+diff --git a/modules/generator/src/main/kotlin/org/lwjgl/generator/Modules.kt b/modules/generator/src/main/kotlin/org/lwjgl/generator/Modules.kt
+index 0b51fb941..914a90c88 100644
+--- a/modules/generator/src/main/kotlin/org/lwjgl/generator/Modules.kt
++++ b/modules/generator/src/main/kotlin/org/lwjgl/generator/Modules.kt
+@@ -48,6 +48,11 @@ enum class Module(
+         "org.lwjgl.system.macosx",
+         "Contains bindings to native APIs specific to the macOS operating system."
+     ),
++    CORE_SUNOS(
++        "core.sunos",
++        "org.lwjgl.system.sunos",
++        "Contains bindings to the SunOS ABI used by Solaris and illumos."
++    ),
+     CORE_WINDOWS(
+         "core.windows",
+         "org.lwjgl.system.windows",
+diff --git a/modules/lwjgl/core/src/main/c/common_tools.h b/modules/lwjgl/core/src/main/c/common_tools.h
+index 11f42d995..6df088417 100644
+--- a/modules/lwjgl/core/src/main/c/common_tools.h
++++ b/modules/lwjgl/core/src/main/c/common_tools.h
+@@ -10,6 +10,9 @@
+ #ifdef LWJGL_LINUX
+     #include "LinuxConfig.h"
+ #endif
++#ifdef LWJGL_SUNOS
++    #include "SunOSConfig.h"
++#endif
+ #ifdef LWJGL_MACOS
+     #include "macOSConfig.h"
+ #endif
+@@ -22,7 +25,7 @@ ENABLE_WARNINGS()
+ 
+ // Per-thread data, stored in a platform-specific thread-local.
+ // Present in threads that had Callback invocations, saveErrno/saveLastError calls, OpenGL(ES) contexts made current.
+-// Clean up is automatic via DllMain notifications (on Windows) or pthread destructors (on Linux/OSX).
++// Clean up is automatic via DllMain notifications (on Windows) or pthread destructors (on POSIX platforms).
+ typedef struct EnvData_ {
+     // true if AttachCurrentThreadAsDaemon was used to attach to a foreign thread (on a callback invocation).
+     jboolean async;
+diff --git a/modules/lwjgl/core/src/main/c/libffi/sparc/ffitarget.h b/modules/lwjgl/core/src/main/c/libffi/sparc/ffitarget.h
+new file mode 100644
+index 000000000..9b6a6b84c
+--- /dev/null
++++ b/modules/lwjgl/core/src/main/c/libffi/sparc/ffitarget.h
+@@ -0,0 +1,67 @@
++#ifndef LIBFFI_TARGET_H
++#define LIBFFI_TARGET_H
++
++#ifndef LIBFFI_H
++#error "Please do not include ffitarget.h directly into your source.  Use ffi.h instead."
++#endif
++
++#if defined(__arch64__) || defined(__sparcv9)
++#ifndef SPARC64
++#define SPARC64
++#endif
++#endif
++
++#ifndef LIBFFI_ASM
++typedef unsigned long ffi_arg;
++typedef signed long ffi_sarg;
++
++typedef enum ffi_abi
++  {
++    FFI_FIRST_ABI = 0,
++    FFI_V8,
++    FFI_V8PLUS,
++    FFI_V9,
++    FFI_LAST_ABI,
++#ifdef SPARC64
++    FFI_DEFAULT_ABI = FFI_V9,
++#else
++    FFI_DEFAULT_ABI = FFI_V8,
++#endif
++
++  // LWJGL
++  FFI_WIN64 = -1,
++  FFI_GNUW64 = -1,
++  FFI_UNIX64 = -1,
++  FFI_EFI64 = -1,
++  FFI_SYSV = -1,
++  FFI_STDCALL = -1,
++  FFI_THISCALL = -1,
++  FFI_FASTCALL = -1,
++  FFI_MS_CDECL = -1,
++  FFI_PASCAL = -1,
++  FFI_REGISTER = -1,
++  FFI_VFP = -1,
++  } ffi_abi;
++#endif
++
++/* ---- Definitions for closures ----------------------------------------- */
++
++#define FFI_CLOSURES 1
++#define FFI_GO_CLOSURES 1
++#define FFI_NATIVE_RAW_API 0
++
++#ifdef SPARC64
++#define FFI_TRAMPOLINE_SIZE 24
++#else
++#define FFI_TRAMPOLINE_SIZE 16
++#endif
++
++#define FFI_TARGET_SPECIFIC_STACK_SPACE_ALLOCATION 1
++#define FFI_TARGET_HAS_COMPLEX_TYPE 1
++
++#ifdef SPARC64
++#define FFI_TARGET_SPECIFIC_VARIADIC 1
++#define FFI_EXTRA_CIF_FIELDS unsigned int nfixedargs
++#endif
++
++#endif
+diff --git a/modules/lwjgl/core/src/main/c/sunos/SunOSConfig.h b/modules/lwjgl/core/src/main/c/sunos/SunOSConfig.h
+new file mode 100644
+index 000000000..bc8eb8d8c
+--- /dev/null
++++ b/modules/lwjgl/core/src/main/c/sunos/SunOSConfig.h
+@@ -0,0 +1,18 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++
++#include <stddef.h>
++#include <stdint.h>
++
++#define DISABLE_WARNINGS() \
++    _Pragma("GCC diagnostic push") \
++    _Pragma("GCC diagnostic ignored \"-Wpedantic\"")
++
++#define ENABLE_WARNINGS() \
++    _Pragma("GCC diagnostic pop")
++
++// JNIEXPORT_CRITICAL & CRITICAL are used as a workaround for JDK-8167409 on applicable functions.
++#define JNIEXPORT_CRITICAL static
++#define CRITICAL(function) _JavaCritical_##function
+diff --git a/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java b/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java
+index 5fbcbe28b..e9aace962 100644
+--- a/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/APIUtil.java
+@@ -8,6 +8,7 @@ import org.lwjgl.*;
+ import org.lwjgl.system.libffi.*;
+ import org.lwjgl.system.linux.*;
+ import org.lwjgl.system.macosx.*;
++import org.lwjgl.system.sunos.*;
+ import org.lwjgl.system.windows.*;
+ 
+ import javax.annotation.*;
+@@ -109,6 +110,8 @@ public final class APIUtil {
+                 return new WindowsLibrary(name);
+             case LINUX:
+                 return new LinuxLibrary(name);
++            case SUNOS:
++                return new SunOSLibrary(name);
+             case MACOSX:
+                 return MacOSXLibrary.create(name);
+             default:
+diff --git a/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java b/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
+index 1babac919..5c825b587 100644
+--- a/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/Platform.java
+@@ -25,6 +25,18 @@ public enum Platform {
+             return System.mapLibraryName(name);
+         }
+     },
++    SUNOS("SunOS", "sunos") {
++        private final Pattern SO = Pattern.compile("(?:^|/)lib\\w+[.]so(?:[.]\\d+)*$");
++
++        @Override
++        String mapLibraryName(String name) {
++            if (SO.matcher(name).find()) {
++                return name;
++            }
++
++            return System.mapLibraryName(name);
++        }
++    },
+     // TODO: Rename to MACOS in LWJGL 4
+     MACOSX("macOS", "macos") {
+         private final Pattern DYLIB = Pattern.compile("(?:^|/)lib\\w+(?:[.]\\d+)*[.]dylib$");
+@@ -54,7 +66,8 @@ public enum Platform {
+         X64(true),
+         X86(false),
+         ARM64(true),
+-        ARM32(false);
++        ARM32(false),
++        SPARC64(true);
+ 
+         static final Architecture current;
+ 
+@@ -62,11 +75,18 @@ public enum Platform {
+ 
+         static {
+             String  osArch  = System.getProperty("os.arch");
+-            boolean is64Bit = osArch.contains("64") || osArch.startsWith("armv8");
+-
+-            current = osArch.startsWith("arm") || osArch.startsWith("aarch64")
+-                ? (is64Bit ? Architecture.ARM64 : Architecture.ARM32)
+-                : (is64Bit ? Architecture.X64 : Architecture.X86);
++            boolean is64Bit = osArch.contains("64") || osArch.startsWith("armv8") || "sparcv9".equals(osArch);
++
++            if (osArch.startsWith("sparc")) {
++                if (!is64Bit) {
++                    throw new UnsupportedOperationException("Only SPARC V9/64-bit is supported.");
++                }
++                current = Architecture.SPARC64;
++            } else {
++                current = osArch.startsWith("arm") || osArch.startsWith("aarch64")
++                    ? (is64Bit ? Architecture.ARM64 : Architecture.ARM32)
++                    : (is64Bit ? Architecture.X64 : Architecture.X86);
++            }
+         }
+ 
+         Architecture(boolean is64Bit) {
+@@ -83,8 +103,10 @@ public enum Platform {
+         String osName = System.getProperty("os.name");
+         if (osName.startsWith("Windows")) {
+             current = WINDOWS;
+-        } else if (osName.startsWith("Linux") || osName.startsWith("FreeBSD") || osName.startsWith("SunOS") || osName.startsWith("Unix")) {
++        } else if (osName.startsWith("Linux") || osName.startsWith("FreeBSD") || osName.startsWith("Unix")) {
+             current = LINUX;
++        } else if (osName.startsWith("SunOS")) {
++            current = SUNOS;
+         } else if (osName.startsWith("Mac OS X") || osName.startsWith("Darwin")) {
+             current = MACOSX;
+         } else {
+diff --git a/modules/lwjgl/core/src/main/java/org/lwjgl/system/sunos/SunOSLibrary.java b/modules/lwjgl/core/src/main/java/org/lwjgl/system/sunos/SunOSLibrary.java
+new file mode 100644
+index 000000000..f941905bf
+--- /dev/null
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/sunos/SunOSLibrary.java
+@@ -0,0 +1,54 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++package org.lwjgl.system.sunos;
++
++import org.lwjgl.system.*;
++
++import javax.annotation.*;
++import java.nio.*;
++
++import static org.lwjgl.system.MemoryStack.*;
++import static org.lwjgl.system.MemoryUtil.*;
++import static org.lwjgl.system.sunos.DynamicLinkLoader.*;
++
++/** Implements a {@link SharedLibrary} for the SunOS ABI (Solaris and illumos). */
++public class SunOSLibrary extends SharedLibrary.Default {
++
++    public SunOSLibrary(String name) {
++        this(name, loadLibrary(name));
++    }
++
++    public SunOSLibrary(String name, long handle) {
++        super(name, handle);
++    }
++
++    private static long loadLibrary(String name) {
++        long handle;
++        try (MemoryStack stack = stackPush()) {
++            handle = dlopen(stack.UTF8(name), RTLD_LAZY | RTLD_LOCAL);
++        }
++        if (handle == NULL) {
++            throw new UnsatisfiedLinkError("Failed to dynamically load library: " + name + " (error = " + dlerror() + ")");
++        }
++        return handle;
++    }
++
++    @Nullable
++    @Override
++    public String getPath() {
++        return SharedLibraryUtil.getLibraryPath(address());
++    }
++
++    @Override
++    public long getFunctionAddress(ByteBuffer functionName) {
++        return dlsym(address(), functionName);
++    }
++
++    @Override
++    public void free() {
++        dlclose(address());
++    }
++
++}
+diff --git a/modules/lwjgl/core/src/main/resources/module-info.java b/modules/lwjgl/core/src/main/resources/module-info.java
+index 3ab5fad14..6b4a57dcd 100644
+--- a/modules/lwjgl/core/src/main/resources/module-info.java
++++ b/modules/lwjgl/core/src/main/resources/module-info.java
+@@ -12,5 +12,6 @@ module org.lwjgl {
+     exports org.lwjgl.system.libffi;
+     exports org.lwjgl.system.linux;
+     exports org.lwjgl.system.macosx;
++    exports org.lwjgl.system.sunos;
+     exports org.lwjgl.system.windows;
+ }
+\ No newline at end of file
+diff --git a/modules/lwjgl/core/src/templates/kotlin/core/sunos/SunOSTypes.kt b/modules/lwjgl/core/src/templates/kotlin/core/sunos/SunOSTypes.kt
+new file mode 100644
+index 000000000..d9c554a46
+--- /dev/null
++++ b/modules/lwjgl/core/src/templates/kotlin/core/sunos/SunOSTypes.kt
+@@ -0,0 +1,9 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++package core.sunos
++
++import org.lwjgl.generator.*
++
++val Display = "Display".opaque // Display is a struct, but should be treated as an opaque type by apps
+diff --git a/modules/lwjgl/core/src/templates/kotlin/core/sunos/templates/DynamicLinkLoader.kt b/modules/lwjgl/core/src/templates/kotlin/core/sunos/templates/DynamicLinkLoader.kt
+new file mode 100644
+index 000000000..daf69227b
+--- /dev/null
++++ b/modules/lwjgl/core/src/templates/kotlin/core/sunos/templates/DynamicLinkLoader.kt
+@@ -0,0 +1,76 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++package core.sunos.templates
++
++import org.lwjgl.generator.*
++
++val dlfcn = "DynamicLinkLoader".nativeClass(Module.CORE_SUNOS, nativeSubPath = "sunos") {
++    nativeImport("<dlfcn.h>")
++
++    documentation = "Native bindings to &lt;dlfcn.h&gt; on the SunOS ABI (Solaris and illumos)."
++
++    val Modes = IntConstant(
++        "The {@code mode} argument to #dlopen() contains one of the following.",
++
++        "RTLD_LAZY"..0x00001,
++        "RTLD_NOW"..0x00002
++    ).javaDocLinks + " #RTLD_NOLOAD #RTLD_GLOBAL #RTLD_LOCAL #RTLD_PARENT #RTLD_GROUP #RTLD_WORLD #RTLD_NODELETE #RTLD_FIRST"
++
++    IntConstant(
++        "Additional {@code mode} flags.",
++
++        "RTLD_NOLOAD"..0x00004,
++        "RTLD_GLOBAL"..0x00100,
++        "RTLD_LOCAL"..0x00000,
++        "RTLD_PARENT"..0x00200,
++        "RTLD_GROUP"..0x00400,
++        "RTLD_WORLD"..0x00800,
++        "RTLD_NODELETE"..0x01000,
++        "RTLD_FIRST"..0x02000
++    )
++
++    opaque_p(
++        "dlopen",
++        """
++        Loads the dynamic library file named by the null-terminated string {@code filename} and returns an opaque "handle" for the dynamic library. If
++        {@code filename} is #NULL, then the returned handle is for the main program.
++        """,
++
++        nullable..charUTF8.const.p("filename", "the name of the dynamic library to open, or #NULL"),
++        int("mode", "a bitfield", Modes, LinkMode.BITFIELD)
++    )
++
++    charASCII.p(
++        "dlerror",
++        """
++        Returns a human readable string describing the most recent error that occurred from #dlopen(), #dlsym() or #dlclose() since
++        the last call to {@code dlerror()}. It returns #NULL if no errors have occurred since initialization or since it was last called.
++        """,
++        void()
++    )
++
++    opaque_p(
++        "dlsym",
++        """
++        Takes a "handle" of a dynamic library returned by #dlopen() and the null-terminated symbol name, returning the address where that symbol is loaded
++        into memory. If the symbol is not found, in the specified library or any of the libraries that were automatically loaded by #dlopen() when that
++        library was loaded, {@code dlsym()} returns #NULL.
++        """,
++
++        opaque_p("handle", "the dynamic library handle"),
++        charASCII.const.p("name", "the symbol name")
++    )
++
++    int(
++        "dlclose",
++        """
++        Decrements the reference count on the dynamic library handle handle. If the reference count drops to zero and no other loaded libraries use symbols in
++        it, then the dynamic library is unloaded.
++        """,
++
++        opaque_p("handle", "the dynamic library to close")
++    )
++
++}
+diff --git a/modules/lwjgl/core/src/templates/kotlin/core/sunos/templates/X11.kt b/modules/lwjgl/core/src/templates/kotlin/core/sunos/templates/X11.kt
+new file mode 100644
+index 000000000..4596bd246
+--- /dev/null
++++ b/modules/lwjgl/core/src/templates/kotlin/core/sunos/templates/X11.kt
+@@ -0,0 +1,48 @@
++/*
++ * Copyright LWJGL. All rights reserved.
++ * License terms: https://www.lwjgl.org/license
++ */
++package core.sunos.templates
++
++import org.lwjgl.generator.*
++import core.sunos.*
++
++val X11 = "X11".nativeClass(
++    Module.CORE_SUNOS,
++    nativeSubPath = "sunos",
++    binding = simpleBinding(Module.CORE_SUNOS, "X11", libraryExpression = "null, \"libX11.so.6\", \"libX11.so.4\", \"libX11.so\"")
++) {
++    documentation = "Native bindings to the subset of libX11 required by LWJGL on the SunOS ABI (Solaris and illumos)."
++
++    val DISPLAY = Display.p("display", "the connection to the X server")
++
++    Display.p(
++        "XOpenDisplay",
++        """
++        Returns a Display structure that serves as the connection to the X server and that contains all the information about that X server.
++        """,
++
++        nullable..charASCII.const.p(
++            "display_name",
++            """
++            the hardware display name, which determines the display and communications domain to be used. On a POSIX-conformant system, if the
++            {@code display_name} is #NULL, it defaults to the value of the DISPLAY environment variable.
++            """
++        )
++    )
++
++    void(
++        "XCloseDisplay",
++        "Closes the connection to the X server for the display specified in the {@code Display} structure.",
++
++        DISPLAY
++    )
++
++    int(
++        "XDefaultScreen",
++        "Returns the default screen number.",
++
++        DISPLAY
++    )
++
++}
+diff --git a/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java b/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java
+index 3e48084ad..44882f6be 100644
+--- a/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java
++++ b/modules/lwjgl/egl/src/main/java/org/lwjgl/egl/EGL.java
+@@ -56,6 +56,7 @@ public final class EGL {
+         SharedLibrary EGL;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 EGL = Library.loadNative(EGL.class, "org.lwjgl.egl", Configuration.EGL_LIBRARY_NAME, "libEGL.so.1");
+                 break;
+             case MACOSX:
+diff --git a/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java b/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java
+index b465b6bfd..33aa74767 100644
+--- a/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java
++++ b/modules/lwjgl/openal/src/main/java/org/lwjgl/openal/ALC.java
+@@ -63,6 +63,7 @@ public final class ALC {
+         String libName;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+             case MACOSX:
+                 libName = "openal";
+                 break;
+diff --git a/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java b/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java
+index 159d983a8..1d42c8e8c 100644
+--- a/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java
++++ b/modules/lwjgl/opencl/src/main/java/org/lwjgl/opencl/CL.java
+@@ -53,6 +53,7 @@ public final class CL {
+         SharedLibrary CL;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+             case WINDOWS:
+                 CL = Library.loadNative(CL.class, "org.lwjgl.opencl", Configuration.OPENCL_LIBRARY_NAME, "OpenCL");
+                 break;
+diff --git a/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java b/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java
+index 35818d31b..be10d84eb 100644
+--- a/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java
++++ b/modules/lwjgl/opengl/src/main/java/org/lwjgl/opengl/GL.java
+@@ -98,6 +98,7 @@ public final class GL {
+         SharedLibrary GL;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 GL = Library.loadNative(GL.class, "org.lwjgl.opengl", Configuration.OPENGL_LIBRARY_NAME, "libGL.so.1", "libGL.so");
+                 break;
+             case MACOSX:
+@@ -134,6 +135,7 @@ public final class GL {
+ 
+                     switch (Platform.get()) {
+                         case LINUX:
++                        case SUNOS:
+                             GetProcAddress = library.getFunctionAddress("glXGetProcAddress");
+                             if (GetProcAddress == NULL) {
+                                 GetProcAddress = library.getFunctionAddress("glXGetProcAddressARB");
+@@ -266,7 +268,7 @@ public final class GL {
+     /**
+      * Returns the GLX capabilities.
+      *
+-     * <p>This method may only be used on Linux.</p>
++     * <p>This method may only be used on an X11/GLX platform.</p>
+      */
+     public static GLXCapabilities getCapabilitiesGLX() {
+         if (capabilitiesGLX == null) {
+@@ -276,12 +278,32 @@ public final class GL {
+         return capabilitiesGLX;
+     }
+ 
++    private static long openDisplayX11() {
++        return Platform.get() == Platform.SUNOS
++            ? org.lwjgl.system.sunos.X11.nXOpenDisplay(NULL)
++            : nXOpenDisplay(NULL);
++    }
++
++    private static int defaultScreenX11(long display) {
++        return Platform.get() == Platform.SUNOS
++            ? org.lwjgl.system.sunos.X11.XDefaultScreen(display)
++            : XDefaultScreen(display);
++    }
++
++    private static void closeDisplayX11(long display) {
++        if (Platform.get() == Platform.SUNOS) {
++            org.lwjgl.system.sunos.X11.XCloseDisplay(display);
++        } else {
++            XCloseDisplay(display);
++        }
++    }
++
+     private static GLXCapabilities initCapabilitiesGLX(boolean client) {
+-        long display = nXOpenDisplay(NULL);
++        long display = openDisplayX11();
+         try {
+-            return createCapabilitiesGLX(display, client ? -1 : XDefaultScreen(display));
++            return createCapabilitiesGLX(display, client ? -1 : defaultScreenX11(display));
+         } finally {
+-            XCloseDisplay(display);
++            closeDisplayX11(display);
+         }
+     }
+ 
+@@ -608,18 +630,18 @@ public final class GL {
+     /**
+      * Creates a {@link GLXCapabilities} instance for the default screen of the specified X connection.
+      *
+-     * <p>This method may only be used on Linux.</p>
++     * <p>This method may only be used on an X11/GLX platform.</p>
+      *
+      * @param display the X connection handle ({@code DISPLAY})
+      */
+     public static GLXCapabilities createCapabilitiesGLX(long display) {
+-        return createCapabilitiesGLX(display, XDefaultScreen(display));
++        return createCapabilitiesGLX(display, defaultScreenX11(display));
+     }
+ 
+     /**
+      * Creates a {@link GLXCapabilities} instance for the specified screen of the specified X connection.
+      *
+-     * <p>This method may only be used on Linux.</p>
++     * <p>This method may only be used on an X11/GLX platform.</p>
+      *
+      * @param display the X connection handle ({@code DISPLAY})
+      * @param screen  the screen index
+diff --git a/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java b/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java
+index 0f5899ad1..ebcee6c84 100644
+--- a/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java
++++ b/modules/lwjgl/opengles/src/main/java/org/lwjgl/opengles/GLES.java
+@@ -81,6 +81,7 @@ public final class GLES {
+         SharedLibrary GLES;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 GLES = Library.loadNative(GLES.class, "org.lwjgl.opengles", Configuration.OPENGLES_LIBRARY_NAME, "libGLESv2.so.2");
+                 break;
+             case MACOSX:
+diff --git a/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java b/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java
+index 4d7c53767..5b5ae4f3f 100644
+--- a/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java
++++ b/modules/lwjgl/vulkan/src/main/java/org/lwjgl/vulkan/VK.java
+@@ -49,6 +49,7 @@ public final class VK {
+         SharedLibrary VK;
+         switch (Platform.get()) {
+             case LINUX:
++            case SUNOS:
+                 VK = Library.loadNative(VK.class, "org.lwjgl.vulkan", Configuration.VULKAN_LIBRARY_NAME, "libvulkan.so.1");
+                 break;
+             case WINDOWS:

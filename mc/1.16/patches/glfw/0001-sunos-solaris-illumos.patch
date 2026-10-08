@@ -1,0 +1,441 @@
+From 3ee9d2e3c6a0079b03c661e6da4ea23ecd729907 Mon Sep 17 00:00:00 2001
+From: solaris <>
+Date: Fri, 11 Sep 2026 19:56:40 -0700
+Subject: [PATCH] Add SunOS Solaris and illumos support
+
+---
+ CMakeLists.txt     | 111 +++++++++++++++++++++++++++++++-
+ src/CMakeLists.txt |   6 ++
+ src/egl_context.c  |   3 +
+ src/glx_context.c  |   5 ++
+ src/posix_module.c | 154 +++++++++++++++++++++++++++++++++++++++++++++
+ src/x11_init.c     |  16 ++---
+ 6 files changed, 286 insertions(+), 9 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8b6cb3b7..fa2e099b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -27,7 +27,15 @@ endif()
+ cmake_dependent_option(GLFW_BUILD_WIN32 "Build support for Win32" ON "WIN32" OFF)
+ cmake_dependent_option(GLFW_BUILD_COCOA "Build support for Cocoa" ON "APPLE" OFF)
+ cmake_dependent_option(GLFW_BUILD_X11 "Build support for X11" ON "UNIX;NOT APPLE" OFF)
+-cmake_dependent_option(GLFW_BUILD_WAYLAND "Build support for Wayland" ON "UNIX;NOT APPLE" OFF)
++# Solaris and illumos both identify as SunOS.  X11 is the established
++# desktop backend there; Wayland remains available as an explicit opt-in.
++if (CMAKE_SYSTEM_NAME STREQUAL "SunOS")
++    set(GLFW_WAYLAND_DEFAULT OFF)
++else()
++    set(GLFW_WAYLAND_DEFAULT ON)
++endif()
++cmake_dependent_option(GLFW_BUILD_WAYLAND "Build support for Wayland" ${GLFW_WAYLAND_DEFAULT} "UNIX;NOT APPLE" OFF)
++unset(GLFW_WAYLAND_DEFAULT)
+ 
+ cmake_dependent_option(GLFW_USE_HYBRID_HPG "Force use of high-performance GPU on hybrid systems" OFF
+                        "WIN32" OFF)
+@@ -45,6 +53,107 @@ endif()
+ 
+ list(APPEND CMAKE_MODULE_PATH "${GLFW_SOURCE_DIR}/CMake/modules")
+ 
++# SunOS uses ISA-specific 64-bit library directories (sparcv9, amd64, etc.).
++# Probe the running build host instead of treating SunOS like Linux.  Solaris
++# and illumos share this ABI convention.
++if (CMAKE_SYSTEM_NAME STREQUAL "SunOS")
++    set(_GLFW_SUNOS_ISA "")
++
++    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
++        find_program(_GLFW_SUNOS_ISAINFO NAMES isainfo PATHS /usr/bin /bin)
++        if (_GLFW_SUNOS_ISAINFO)
++            execute_process(COMMAND "${_GLFW_SUNOS_ISAINFO}" -k
++                            OUTPUT_VARIABLE _GLFW_SUNOS_ISA
++                            OUTPUT_STRIP_TRAILING_WHITESPACE
++                            ERROR_QUIET)
++        endif()
++
++        if (NOT _GLFW_SUNOS_ISA)
++            string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _GLFW_SUNOS_PROCESSOR)
++            if (_GLFW_SUNOS_PROCESSOR MATCHES "sparcv9|sparc64|sparc")
++                set(_GLFW_SUNOS_ISA "sparcv9")
++            elseif (_GLFW_SUNOS_PROCESSOR MATCHES "amd64|x86_64")
++                set(_GLFW_SUNOS_ISA "amd64")
++            elseif (_GLFW_SUNOS_PROCESSOR MATCHES "aarch64|arm64")
++                foreach(_candidate aarch64 arm64 64)
++                    if (IS_DIRECTORY "/usr/lib/${_candidate}")
++                        set(_GLFW_SUNOS_ISA "${_candidate}")
++                        break()
++                    endif()
++                endforeach()
++            endif()
++        endif()
++    endif()
++
++    # Keep 64-bit ISA directories ahead of unsuffixed /usr/lib.  Solaris
++    # packages 32-bit objects in /usr/lib and 64-bit objects in /usr/lib/amd64
++    # or /usr/lib/sparcv9, so reversing this order can make CMake inspect the
++    # wrong ELF class first.
++    set(_GLFW_SUNOS_LIBRARY_DIRS "")
++    set(_GLFW_SUNOS_PKGCONFIG_DIRS "")
++
++    if (_GLFW_SUNOS_ISA)
++        list(APPEND _GLFW_SUNOS_LIBRARY_DIRS
++             "/usr/lib/${_GLFW_SUNOS_ISA}"
++             "/usr/lib/GL/${_GLFW_SUNOS_ISA}"
++             "/usr/lib/mesa/${_GLFW_SUNOS_ISA}"
++             "/usr/X11/lib/${_GLFW_SUNOS_ISA}"
++             "/usr/openwin/lib/${_GLFW_SUNOS_ISA}")
++        list(APPEND _GLFW_SUNOS_PKGCONFIG_DIRS
++             "/usr/lib/${_GLFW_SUNOS_ISA}/pkgconfig")
++    endif()
++
++    list(APPEND _GLFW_SUNOS_LIBRARY_DIRS
++         /usr/lib
++         /usr/lib/GL
++         /usr/lib/mesa
++         /usr/lib/X11
++         /usr/X11/lib
++         /usr/openwin/lib)
++    list(APPEND _GLFW_SUNOS_PKGCONFIG_DIRS /usr/lib/pkgconfig)
++
++    set(_GLFW_SUNOS_FOUND_LIBRARY_DIRS "")
++    foreach(_dir IN LISTS _GLFW_SUNOS_LIBRARY_DIRS)
++        if (IS_DIRECTORY "${_dir}")
++            list(APPEND _GLFW_SUNOS_FOUND_LIBRARY_DIRS "${_dir}")
++        endif()
++    endforeach()
++    if (_GLFW_SUNOS_FOUND_LIBRARY_DIRS)
++        # Prepend the complete ordered list once.  Repeated PREPEND operations
++        # would reverse the order and put 32-bit /usr/lib ahead of sparcv9.
++        list(PREPEND CMAKE_LIBRARY_PATH ${_GLFW_SUNOS_FOUND_LIBRARY_DIRS})
++    endif()
++
++    # X11 headers are in /usr/include/X11.  Mesa's implementation headers are
++    # in /usr/include/mesa with selected public GL/EGL links under /usr/include.
++    set(_GLFW_SUNOS_FOUND_INCLUDE_DIRS "")
++    foreach(_dir /usr/include /usr/include/mesa /usr/include/X11)
++        if (IS_DIRECTORY "${_dir}")
++            list(APPEND _GLFW_SUNOS_FOUND_INCLUDE_DIRS "${_dir}")
++        endif()
++    endforeach()
++    if (_GLFW_SUNOS_FOUND_INCLUDE_DIRS)
++        list(PREPEND CMAKE_INCLUDE_PATH ${_GLFW_SUNOS_FOUND_INCLUDE_DIRS})
++    endif()
++
++    set(_GLFW_SUNOS_PC_PATHS "")
++    foreach(_dir IN LISTS _GLFW_SUNOS_PKGCONFIG_DIRS)
++        if (IS_DIRECTORY "${_dir}")
++            list(APPEND _GLFW_SUNOS_PC_PATHS "${_dir}")
++        endif()
++    endforeach()
++    if (_GLFW_SUNOS_PC_PATHS)
++        string(JOIN ":" _GLFW_SUNOS_PC_PATH ${_GLFW_SUNOS_PC_PATHS})
++        if (DEFINED ENV{PKG_CONFIG_PATH} AND NOT "$ENV{PKG_CONFIG_PATH}" STREQUAL "")
++            set(ENV{PKG_CONFIG_PATH} "${_GLFW_SUNOS_PC_PATH}:$ENV{PKG_CONFIG_PATH}")
++        else()
++            set(ENV{PKG_CONFIG_PATH} "${_GLFW_SUNOS_PC_PATH}")
++        endif()
++    endif()
++
++    message(STATUS "SunOS ISA library suffix: ${_GLFW_SUNOS_ISA}")
++endif()
++
+ find_package(Threads REQUIRED)
+ 
+ #--------------------------------------------------------------------
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 24f099fe..5c8d8cb7 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -138,6 +138,12 @@ target_include_directories(glfw PRIVATE
+                            "${GLFW_BINARY_DIR}/src")
+ target_link_libraries(glfw PRIVATE Threads::Threads)
+ 
++# Solaris and illumos share the SunOS ABI.  GLFW is strict C99, so request
++# the normal POSIX/XSI interfaces exposed by the SunOS system headers.
++if (CMAKE_SYSTEM_NAME STREQUAL "SunOS")
++    target_compile_definitions(glfw PRIVATE __EXTENSIONS__ _REENTRANT _POSIX_PTHREAD_SEMANTICS _POSIX_C_SOURCE=200809L)
++endif()
++
+ if (GLFW_BUILD_WIN32)
+     list(APPEND glfw_PKG_LIBS "-lgdi32")
+ endif()
+diff --git a/src/egl_context.c b/src/egl_context.c
+index f470abbc..54fc5470 100644
+--- a/src/egl_context.c
++++ b/src/egl_context.c
+@@ -397,6 +397,9 @@ GLFWbool _glfwInitEGL(void)
+         "libEGL.dylib",
+ #elif defined(__CYGWIN__)
+         "libEGL-1.so",
++#elif defined(__sun)
++        "libEGL.so.1",
++        "libEGL.so",
+ #elif defined(__OpenBSD__) || defined(__NetBSD__)
+         "libEGL.so",
+ #else
+diff --git a/src/glx_context.c b/src/glx_context.c
+index 1813acfe..ac044537 100644
+--- a/src/glx_context.c
++++ b/src/glx_context.c
+@@ -259,6 +259,11 @@ GLFWbool _glfwInitGLX(void)
+         _GLFW_GLX_LIBRARY,
+ #elif defined(__CYGWIN__)
+         "libGL-1.so",
++#elif defined(__sun)
++        // Solaris Mesa exposes GLX through libGL.so.1; libGLX.so.0 is not
++        // part of the traditional Solaris OpenGL selection layout.
++        "libGL.so.1",
++        "libGL.so",
+ #elif defined(__OpenBSD__) || defined(__NetBSD__)
+         "libGL.so",
+ #else
+diff --git a/src/posix_module.c b/src/posix_module.c
+index 0a35e745..ea0eb0ac 100644
+--- a/src/posix_module.c
++++ b/src/posix_module.c
+@@ -30,13 +30,167 @@
+ 
+ #include <dlfcn.h>
+ 
++#if defined(__sun)
++#include <stdio.h>
++#include <string.h>
++#include <sys/systeminfo.h>
++#endif
++
+ //////////////////////////////////////////////////////////////////////////
+ //////                       GLFW platform API                      //////
+ //////////////////////////////////////////////////////////////////////////
+ 
++#if defined(__sun)
++static void* _glfwTryModuleSunOS(const char* path)
++{
++    void* module;
++    char isa[64] = {0};
++    char candidate[1024];
++
++    // Always ask the runtime linker first.  This preserves crle(1), RUNPATH,
++    // LD_LIBRARY_PATH and Solaris service/opengl/ogl-select selection.
++    module = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
++    if (module || strchr(path, '/'))
++        return module;
++
++    // 64-bit Solaris and illumos keep ELF objects in ISA subdirectories.
++    // On Oracle Solaris these are normally sparcv9 and amd64.  Query the
++    // kernel rather than inferring the ISA from compiler predefined macros.
++    if (sizeof(void*) == 8 &&
++        sysinfo(SI_ARCHITECTURE_64, isa, sizeof(isa)) > 0 && isa[0])
++    {
++        const char* formats[] =
++        {
++            "/usr/lib/%s/%s",
++            "/usr/lib/GL/%s/%s",
++            "/usr/lib/mesa/%s/%s",
++            "/usr/X11/lib/%s/%s",
++            "/usr/openwin/lib/%s/%s",
++            NULL
++        };
++
++        for (int i = 0; formats[i]; i++)
++        {
++            const int length = snprintf(candidate, sizeof(candidate), formats[i], isa, path);
++            if (length >= 0 && length < (int) sizeof(candidate))
++            {
++                module = dlopen(candidate, RTLD_LAZY | RTLD_LOCAL);
++                if (module)
++                    return module;
++            }
++        }
++    }
++
++    // 32-bit objects and compatibility links use the unsuffixed directories.
++    {
++        const char* directories[] =
++        {
++            "/usr/lib",
++            "/usr/lib/GL",
++            "/usr/lib/mesa",
++            "/usr/X11/lib",
++            "/usr/openwin/lib",
++            NULL
++        };
++
++        for (int i = 0; directories[i]; i++)
++        {
++            const int length = snprintf(candidate, sizeof(candidate), "%s/%s", directories[i], path);
++            if (length >= 0 && length < (int) sizeof(candidate))
++            {
++                module = dlopen(candidate, RTLD_LAZY | RTLD_LOCAL);
++                if (module)
++                    return module;
++            }
++        }
++    }
++
++    return NULL;
++}
++
++static void* _glfwLoadModuleSunOS(const char* path)
++{
++    void* module = _glfwTryModuleSunOS(path);
++    if (module)
++        return module;
++
++    if (strchr(path, '/'))
++        return NULL;
++
++    // GLFW follows Linux ABI SONAMEs for several dlopen'ed X11 libraries.
++    // Solaris development packages expose an unversioned libFoo.so link in
++    // the native ISA directory, so strip a trailing numeric .so ABI first.
++    // This avoids hard-coding Solaris ABI numbers for every X11 extension.
++    {
++        const char* so = strstr(path, ".so.");
++        if (so && so[4])
++        {
++            const char* version = so + 4;
++            GLFWbool numeric = GLFW_TRUE;
++            for (const char* p = version; *p; p++)
++            {
++                if ((*p < '0' || *p > '9') && *p != '.')
++                {
++                    numeric = GLFW_FALSE;
++                    break;
++                }
++            }
++
++            if (numeric)
++            {
++                const size_t length = (size_t) (so - path) + 3;
++                if (length < 1024)
++                {
++                    char candidate[1024];
++                    memcpy(candidate, path, length);
++                    candidate[length] = '\0';
++                    module = _glfwTryModuleSunOS(candidate);
++                    if (module)
++                        return module;
++                }
++            }
++        }
++    }
++
++    // libX11 is the important exception where a runtime-only Solaris image
++    // may have the ABI library but not an unversioned developer symlink.
++    // Solaris 11.4 ships libX11.so.4.0.0 and compatibility .so.4/.so.5 links.
++    if (strcmp(path, "libX11.so") == 0 || strcmp(path, "libX11.so.6") == 0)
++    {
++        static const char* alternatives[] =
++        {
++            "libX11.so.5",
++            "libX11.so.4",
++            "libX11.so.4.0.0",
++            NULL
++        };
++
++        for (int i = 0; alternatives[i]; i++)
++        {
++            module = _glfwTryModuleSunOS(alternatives[i]);
++            if (module)
++                return module;
++        }
++    }
++
++    // Older Solaris X extension ABIs retained these SONAMEs.  Keep them as
++    // last-resort compatibility fallbacks after the generic unversioned path.
++    if (strcmp(path, "libXext.so") == 0 || strcmp(path, "libXext.so.6") == 0)
++        return _glfwTryModuleSunOS("libXext.so.0");
++    if (strcmp(path, "libXi.so") == 0 || strcmp(path, "libXi.so.6") == 0)
++        return _glfwTryModuleSunOS("libXi.so.5");
++
++    return NULL;
++}
++#endif
++
+ void* _glfwPlatformLoadModule(const char* path)
+ {
++#if defined(__sun)
++    return _glfwLoadModuleSunOS(path);
++#else
+     return dlopen(path, RTLD_LAZY | RTLD_LOCAL);
++#endif
+ }
+ 
+ void _glfwPlatformFreeModule(void* module)
+diff --git a/src/x11_init.c b/src/x11_init.c
+index 1467c74d..12fc61fc 100644
+--- a/src/x11_init.c
++++ b/src/x11_init.c
+@@ -629,7 +629,7 @@ static GLFWbool initExtensions(void)
+ 
+ #if defined(__CYGWIN__)
+     _glfw.x11.xi.handle = _glfwPlatformLoadModule("libXi-6.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+     _glfw.x11.xi.handle = _glfwPlatformLoadModule("libXi.so");
+ #else
+     _glfw.x11.xi.handle = _glfwPlatformLoadModule("libXi.so.6");
+@@ -661,7 +661,7 @@ static GLFWbool initExtensions(void)
+ 
+ #if defined(__CYGWIN__)
+     _glfw.x11.randr.handle = _glfwPlatformLoadModule("libXrandr-2.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+     _glfw.x11.randr.handle = _glfwPlatformLoadModule("libXrandr.so");
+ #else
+     _glfw.x11.randr.handle = _glfwPlatformLoadModule("libXrandr.so.2");
+@@ -755,7 +755,7 @@ static GLFWbool initExtensions(void)
+ 
+ #if defined(__CYGWIN__)
+     _glfw.x11.xcursor.handle = _glfwPlatformLoadModule("libXcursor-1.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+     _glfw.x11.xcursor.handle = _glfwPlatformLoadModule("libXcursor.so");
+ #else
+     _glfw.x11.xcursor.handle = _glfwPlatformLoadModule("libXcursor.so.1");
+@@ -778,7 +778,7 @@ static GLFWbool initExtensions(void)
+ 
+ #if defined(__CYGWIN__)
+     _glfw.x11.xinerama.handle = _glfwPlatformLoadModule("libXinerama-1.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+     _glfw.x11.xinerama.handle = _glfwPlatformLoadModule("libXinerama.so");
+ #else
+     _glfw.x11.xinerama.handle = _glfwPlatformLoadModule("libXinerama.so.1");
+@@ -833,7 +833,7 @@ static GLFWbool initExtensions(void)
+     {
+ #if defined(__CYGWIN__)
+         _glfw.x11.x11xcb.handle = _glfwPlatformLoadModule("libX11-xcb-1.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+         _glfw.x11.x11xcb.handle = _glfwPlatformLoadModule("libX11-xcb.so");
+ #else
+         _glfw.x11.x11xcb.handle = _glfwPlatformLoadModule("libX11-xcb.so.1");
+@@ -848,7 +848,7 @@ static GLFWbool initExtensions(void)
+ 
+ #if defined(__CYGWIN__)
+     _glfw.x11.xrender.handle = _glfwPlatformLoadModule("libXrender-1.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+     _glfw.x11.xrender.handle = _glfwPlatformLoadModule("libXrender.so");
+ #else
+     _glfw.x11.xrender.handle = _glfwPlatformLoadModule("libXrender.so.1");
+@@ -877,7 +877,7 @@ static GLFWbool initExtensions(void)
+ 
+ #if defined(__CYGWIN__)
+     _glfw.x11.xshape.handle = _glfwPlatformLoadModule("libXext-6.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+     _glfw.x11.xshape.handle = _glfwPlatformLoadModule("libXext.so");
+ #else
+     _glfw.x11.xshape.handle = _glfwPlatformLoadModule("libXext.so.6");
+@@ -1258,7 +1258,7 @@ GLFWbool _glfwConnectX11(int platformID, _GLFWplatform* platform)
+ 
+ #if defined(__CYGWIN__)
+     void* module = _glfwPlatformLoadModule("libX11-6.so");
+-#elif defined(__OpenBSD__) || defined(__NetBSD__)
++#elif defined(__sun) || defined(__OpenBSD__) || defined(__NetBSD__)
+     void* module = _glfwPlatformLoadModule("libX11.so");
+ #else
+     void* module = _glfwPlatformLoadModule("libX11.so.6");
+-- 
+2.39.5 (Apple Git-154)
+

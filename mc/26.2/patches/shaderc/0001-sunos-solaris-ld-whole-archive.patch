@@ -1,0 +1,18 @@
+diff --git a/libshaderc/CMakeLists.txt b/libshaderc/CMakeLists.txt
+index a6f7a7d..aff7ab8 100644
+--- a/libshaderc/CMakeLists.txt
++++ b/libshaderc/CMakeLists.txt
+@@ -119,8 +119,12 @@ elseif(APPLE)
+     "-Wl,-force_load,$<TARGET_FILE:glslang-default-resource-limits>"
+     "-Wl,-force_load,$<TARGET_FILE:SPIRV-Tools>"
+     "-Wl,-force_load,$<TARGET_FILE:SPIRV-Tools-opt>")
++elseif(CMAKE_SYSTEM_NAME STREQUAL "SunOS" AND NOT SHADERC_SUNOS_GNU_LD)
++  # Solaris ld has no --whole-archive; use its -z allextract/defaultextract.
++  target_link_libraries(shaderc_shared PRIVATE
++    "-Wl,-z,allextract" glslang glslang-default-resource-limits SPIRV-Tools SPIRV-Tools-opt "-Wl,-z,defaultextract")
+ else()
+-  # GCC/Clang on ELF platforms
++  # GCC/Clang on ELF platforms (GNU ld, lld, gold)
+   target_link_libraries(shaderc_shared PRIVATE
+     "-Wl,--whole-archive" glslang glslang-default-resource-limits SPIRV-Tools SPIRV-Tools-opt "-Wl,--no-whole-archive")
+ endif()
