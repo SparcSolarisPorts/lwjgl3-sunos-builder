@@ -56,9 +56,11 @@ create_mirror() {
 mirror_repo() {
   _key=$(printf '%s' "$2" | sed 's/[^A-Za-z0-9]/_/g')
   MIRROR=$CACHE/$1-$_key.git
-  mkdir -p "$CACHE"
+  is_dry || mkdir -p "$CACHE"
   case " $_MIRRORED " in *" $MIRROR "*) return 0 ;; esac
-  if [ -d "$MIRROR" ]; then
+  if is_dry; then
+    printf '+ ensure mirror %s from %s\n' "$MIRROR" "$2" >&2
+  elif [ -d "$MIRROR" ]; then
     if [ -z "${OFFLINE:-}" ]; then
       log "updating mirror $1 ($2)"
       # Keep the remote URL correct when recovering a mirror created by an
@@ -219,14 +221,16 @@ cache_tool_version() {
 # Sets CACHE_KEY and CACHE_ID from the resolved source, ordered patch contents,
 # recipe parameters, target flags, selected toolchain versions and environment.
 cache_identity() {
-  _ci_name=$1; _ci_src=$2; _ci_patches=$3; _ci_extra=$4
+  _ci_name=$1; _ci_src=$2; _ci_patchdir=$3; _ci_extra=$4
   CACHE_SAFE=1
+  cache_valid_name "$_ci_name" || die "invalid cache component name: $_ci_name"
   _ci_commit=$(git -C "$_ci_src" rev-parse HEAD 2>/dev/null) || { _ci_commit=unknown; CACHE_SAFE=0; }
   _ci_tree=
   _ci_tmp=${TMPDIR:-/tmp}/lwjgl-cache-id-$$
+  _ci_cc=unknown; _ci_cxx=unknown; _ci_make=unknown; _ci_cmake=unknown
   if [ "$_ci_commit" != unknown ]; then
     if git -C "$_ci_src" diff --binary HEAD > "$_ci_tmp.diff" 2>/dev/null; then
-      cache_checksum "$_ci_tmp.diff" || CACHE_SAFE=0
+      cache_checksum "$_ci_tmp.diff" || { CACHE_SAFE=0; CACHE_SUM=unknown; }
       _ci_tree="diff=$CACHE_SUM"
     else
       CACHE_SAFE=0; _ci_tree=diff=unknown
@@ -249,11 +253,12 @@ cache_identity() {
     _ci_tree=unknown
   fi
   rm -f "$_ci_tmp.diff" "$_ci_tmp.files"
-  cache_tool_version "$CC" --version; _ci_cc=$CACHE_TOOL_VERSION
-  cache_tool_version "$CXX" --version; _ci_cxx=$CACHE_TOOL_VERSION
-  cache_tool_version "$MAKE" --version; _ci_make=$CACHE_TOOL_VERSION
-  cache_tool_version "$CMAKE" --version; _ci_cmake=$CACHE_TOOL_VERSION
+  cache_tool_version "$(command -v "$CC" 2>/dev/null || printf '%s' "$CC")" --version; _ci_cc=$CACHE_TOOL_VERSION
+  cache_tool_version "$(command -v "$CXX" 2>/dev/null || printf '%s' "$CXX")" --version; _ci_cxx=$CACHE_TOOL_VERSION
+  cache_tool_version "$(command -v "$MAKE" 2>/dev/null || printf '%s' "$MAKE")" --version; _ci_make=$CACHE_TOOL_VERSION
+  cache_tool_version "$(command -v "$CMAKE" 2>/dev/null || printf '%s' "$CMAKE")" --version; _ci_cmake=$CACHE_TOOL_VERSION
   _ci_ant=$(command -v ant 2>/dev/null || printf unknown)
+  [ "$_ci_cc" != unknown ] && [ "$_ci_cxx" != unknown ] && [ "$_ci_make" != unknown ] && [ "$_ci_cmake" != unknown ] || CACHE_SAFE=0
   if [ "$_ci_ant" != unknown ]; then cache_tool_version "$_ci_ant" -version; _ci_ant="$_ci_ant:$CACHE_TOOL_VERSION"; fi
   _ci_java=${JAVA_HOME:-unknown}
   if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
@@ -264,8 +269,8 @@ cache_identity() {
   fi
   _ci_patches=
   _ci_dep_env="CPPFLAGS=${CPPFLAGS:-};CPATH=${CPATH:-};C_INCLUDE_PATH=${C_INCLUDE_PATH:-};CPLUS_INCLUDE_PATH=${CPLUS_INCLUDE_PATH:-};LIBRARY_PATH=${LIBRARY_PATH:-};SDKROOT=${SDKROOT:-};SYSROOT=${SYSROOT:-};CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-};CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE:-};PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-};PKG_CONFIG_LIBDIR=${PKG_CONFIG_LIBDIR:-};PATH=${PATH:-}"
-  if [ -d "$3" ]; then
-    for _ci_patch in "$3"/*.patch; do
+  if [ -d "$_ci_patchdir" ]; then
+    for _ci_patch in "$_ci_patchdir"/*.patch; do
       [ -f "$_ci_patch" ] || continue
       cache_checksum "$_ci_patch" || die "cannot checksum $_ci_patch"
       _ci_base=$(basename "$_ci_patch")
@@ -273,6 +278,7 @@ cache_identity() {
       _ci_patches="$_ci_patches;$_ci_base=$CACHE_SUM"
     done
   fi
+  if [ -n "$_ci_patches" ]; then :; else _ci_patches=none; fi
   CACHE_ID=$(printf 'format=3\ncomponent=%s\ncommit=%s\ntree=%s\npatches=%s\nplatform=%s\nhost=%s\nexpect_machine=%s\narch=%s\nCC=%s\nCXX=%s\nCFLAGS=%s\nCXXFLAGS=%s\nLDFLAGS=%s\nDEPS=%s\nMAKE=%s\nCMAKE=%s\nANT=%s\nJAVA=%s\nJOBS=%s\nextra=%s\n' \
     "$_ci_name" "$_ci_commit" "$_ci_tree" "$_ci_patches" "$(uname -s 2>/dev/null || printf unknown)" \
     "$(uname -m 2>/dev/null || printf unknown)" "${EXPECT_MACHINE:-002b}" "${ARCH_FLAGS:-}" "$CC:$_ci_cc" "$CXX:$_ci_cxx" "${CFLAGS:-}" "${CXXFLAGS:-}" "${LDFLAGS:-}" "$_ci_dep_env" \
@@ -280,6 +286,23 @@ cache_identity() {
   cache_digest "$CACHE_ID" || die "cannot checksum cache identity"
   CACHE_KEY=$CACHE_DIGEST
   CACHE_DIR=$ARTIFACTS/$_ci_name/$CACHE_KEY
+}
+
+# cache_entry_valid DIR ID OUTPUT... -- require metadata, checksum and ELF validity.
+cache_entry_valid() {
+  _ce_dir=$1; _ce_id=$2; shift 2
+  [ ! -L "$_ce_dir" ] && [ -d "$_ce_dir" ] || return 1
+  [ ! -L "$_ce_dir/complete" ] && [ -f "$_ce_dir/complete" ] || return 1
+  [ ! -L "$_ce_dir/identity" ] && [ -f "$_ce_dir/identity" ] || return 1
+  [ ! -L "$_ce_dir/files.manifest" ] && [ -f "$_ce_dir/files.manifest" ] || return 1
+  printf '%s' "$_ce_id" | cmp -s - "$_ce_dir/identity" || return 1
+  for _ce_file in "$@"; do
+    cache_valid_name "$_ce_file" || return 1
+    [ ! -L "$_ce_dir/files/$_ce_file" ] && [ -f "$_ce_dir/files/$_ce_file" ] || return 1
+    cache_checksum "$_ce_dir/files/$_ce_file" || return 1
+    grep -F -x "$_ce_file $CACHE_SUM" "$_ce_dir/files.manifest" >/dev/null 2>&1 || return 1
+    case $_ce_file in *.so|*.so.*) elf_check "$_ce_dir/files/$_ce_file" || return 1 ;; esac
+  done
 }
 
 # cache_restore NAME OUTPUT... -- validate and copy a complete entry into OUT.
@@ -290,36 +313,37 @@ cache_restore() {
   is_dry && return 0
   [ "${CACHE_SAFE:-0}" -eq 1 ] || return 0
   [ "$#" -gt 0 ] || return 0
-  [ ! -L "$CACHE_DIR" ] && [ -d "$CACHE_DIR" ] || return 0
-  [ ! -L "$CACHE_DIR/complete" ] && [ -f "$CACHE_DIR/complete" ] || return 0
-  [ ! -L "$CACHE_DIR/identity" ] && [ -f "$CACHE_DIR/identity" ] || return 0
-  [ ! -L "$CACHE_DIR/files.manifest" ] && [ -f "$CACHE_DIR/files.manifest" ] || return 0
-  printf '%s' "$CACHE_ID" | cmp -s - "$CACHE_DIR/identity" || return 0
-  for _cr_file in "$@"; do
-    cache_valid_name "$_cr_file" || return 0
-    [ ! -L "$CACHE_DIR/files/$_cr_file" ] && [ -f "$CACHE_DIR/files/$_cr_file" ] || return 0
-    cache_checksum "$CACHE_DIR/files/$_cr_file" || return 0
-    grep -F -x "$_cr_file $CACHE_SUM" "$CACHE_DIR/files.manifest" >/dev/null 2>&1 || return 0
-    case $_cr_file in *.so|*.so.*)
-      elf_check "$CACHE_DIR/files/$_cr_file" || { warn "rejecting non-SPARCV9 cache entry $_cr_name/$_cr_file"; return 0; } ;;
-    esac
-  done
+  cache_entry_valid "$CACHE_DIR" "$CACHE_ID" "$@" || {
+    [ -d "$CACHE_DIR" ] && warn "rejecting incomplete or invalid cache entry $_cr_name ($CACHE_KEY)"
+    return 0
+  }
   mkdir -p "$OUT" || return 1
-  _cr_tmp=$OUT/.cache-restore-$$
-  _cr_backup=$OUT/.cache-backup-$$
-  rm -rf "$_cr_tmp" "$_cr_backup"
+  _cr_n=$$
+  _cr_tmp=$OUT/.cache-restore-$_cr_n
+  _cr_backup=$OUT/.cache-backup-$_cr_n
+  while [ -e "$_cr_tmp" ] || [ -L "$_cr_tmp" ] || [ -e "$_cr_backup" ] || [ -L "$_cr_backup" ]; do
+    _cr_n=$((_cr_n + 1)); _cr_tmp=$OUT/.cache-restore-$_cr_n; _cr_backup=$OUT/.cache-backup-$_cr_n
+  done
   mkdir "$_cr_tmp" "$_cr_backup" || { rm -rf "$_cr_tmp" "$_cr_backup"; return 1; }
   for _cr_file in "$@"; do
     cp "$CACHE_DIR/files/$_cr_file" "$_cr_tmp/$_cr_file" || { rm -rf "$_cr_tmp" "$_cr_backup"; return 1; }
   done
+  _cr_backed=
   for _cr_file in "$@"; do
     if [ -e "$OUT/$_cr_file" ] || [ -L "$OUT/$_cr_file" ]; then
-      mv "$OUT/$_cr_file" "$_cr_backup/$_cr_file" || { rm -rf "$_cr_tmp" "$_cr_backup"; return 1; }
+      if ! mv "$OUT/$_cr_file" "$_cr_backup/$_cr_file"; then
+        for _cr_done in $_cr_backed; do mv "$_cr_backup/$_cr_done" "$OUT/$_cr_done" 2>/dev/null || true; done
+        rm -rf "$_cr_tmp" "$_cr_backup"
+        return 1
+      fi
+      _cr_backed="$_cr_backed $_cr_file"
     fi
   done
   for _cr_file in "$@"; do
     if ! mv "$_cr_tmp/$_cr_file" "$OUT/$_cr_file"; then
-      for _cr_done in "$@"; do rm -f "$OUT/$_cr_done"; done
+      for _cr_done in "$@"; do
+        [ -e "$_cr_backup/$_cr_done" ] || [ -L "$_cr_backup/$_cr_done" ] || rm -f "$OUT/$_cr_done"
+      done
       for _cr_done in "$@"; do
         if [ -e "$_cr_backup/$_cr_done" ] || [ -L "$_cr_backup/$_cr_done" ]; then mv "$_cr_backup/$_cr_done" "$OUT/$_cr_done"; fi
       done
@@ -342,9 +366,10 @@ cache_publish() {
   [ "$#" -gt 0 ] || return 1
   for _cp_file in "$@"; do cache_valid_name "$_cp_file" || return 1; done
   _cp_parent=$ARTIFACTS/$_cp_name
-  _cp_tmp=$_cp_parent/.$CACHE_KEY.$$
   mkdir -p "$_cp_parent" || return 1
-  while [ -e "$_cp_tmp" ] || [ -L "$_cp_tmp" ]; do _cp_tmp=$_cp_parent/.$CACHE_KEY.$_cp_n; _cp_n=$((${_cp_n:-$$} + 1)); done
+  _cp_n=$$
+  _cp_tmp=$_cp_parent/.$CACHE_KEY.$_cp_n
+  while [ -e "$_cp_tmp" ] || [ -L "$_cp_tmp" ]; do _cp_n=$((_cp_n + 1)); _cp_tmp=$_cp_parent/.$CACHE_KEY.$_cp_n; done
   mkdir "$_cp_tmp" || return 1
   mkdir "$_cp_tmp/files" || { rm -rf "$_cp_tmp"; return 1; }
   : > "$_cp_tmp/files.manifest" || { rm -rf "$_cp_tmp"; return 1; }
@@ -359,7 +384,7 @@ cache_publish() {
   done
   printf '%s' "$CACHE_ID" > "$_cp_tmp/identity" || { rm -rf "$_cp_tmp"; return 1; }
   : > "$_cp_tmp/complete" || { rm -rf "$_cp_tmp"; return 1; }
-  if [ -d "$CACHE_DIR" ] && [ ! -L "$CACHE_DIR" ] && [ -f "$CACHE_DIR/complete" ] && printf '%s' "$CACHE_ID" | cmp -s - "$CACHE_DIR/identity"; then
+  if cache_entry_valid "$CACHE_DIR" "$CACHE_ID" "$@"; then
     rm -rf "$_cp_tmp"
     return 0
   fi

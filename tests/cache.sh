@@ -5,6 +5,12 @@ ROOT=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 TMP=${TMPDIR:-/tmp}/lwjgl-cache-test-$$
 trap 'rm -rf "$TMP"' 0 HUP INT TERM
 mkdir -p "$TMP/src" "$TMP/patches" "$TMP/artifacts" "$TMP/out1" "$TMP/out2" "$TMP/input"
+git -C "$TMP/src" init -q
+git -C "$TMP/src" config user.email cache-test@example.invalid
+git -C "$TMP/src" config user.name cache-test
+printf 'source\n' > "$TMP/src/source.txt"
+git -C "$TMP/src" add source.txt
+git -C "$TMP/src" commit -qm initial
 CACHE=$TMP/source-cache ARTIFACTS=$TMP/artifacts WORK=$TMP/work
 OUT=$TMP/out1 MC_VERSION=test
 CC=cc CXX=c++ MAKE=make CMAKE=cmake JOBS=1
@@ -67,11 +73,29 @@ for _bad_elf in class endian machine; do
   if cache_publish "wrong-$_bad_elf" "$TMP/input" wrong.so 2>/dev/null; then fail "$_bad_elf ELF published"; fi
 done
 
-# Identity changes when recipe flags change.
+# Identity changes when recipe flags, patch names/content, or source tree change.
 cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 KEY1=$CACHE_KEY
 CFLAGS=-O3
 cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 [ "$CACHE_KEY" != "$KEY1" ] || fail 'CFLAGS did not invalidate identity'
+CFLAGS=
+printf 'patch one\n' > "$TMP/patches/001.patch"
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+KEY1=$CACHE_KEY
+mv "$TMP/patches/001.patch" "$TMP/patches/002.patch"
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+[ "$CACHE_KEY" != "$KEY1" ] || fail 'patch name did not invalidate identity'
+printf 'dirty source\n' >> "$TMP/src/source.txt"
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+[ "$CACHE_KEY" != "$KEY1" ] || fail 'dirty source did not invalidate identity'
+
+# Dry-run restore is a miss and must not create output files/directories.
+OUT=$TMP/dry-out
+DRY_RUN=1
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+cache_restore sample sample.jar || fail 'dry-run restore errored'
+[ "$CACHE_HIT" -eq 0 ] && [ ! -e "$OUT" ] || fail 'dry-run restore mutated output'
+unset DRY_RUN
 
 printf 'cache tests: ok\n'

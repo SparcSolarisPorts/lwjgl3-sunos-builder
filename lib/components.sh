@@ -84,8 +84,10 @@ comp_lwjgl3() {
     case "$_n" in liblwjgl*.so) _lwjgl_outputs="$_lwjgl_outputs $_n" ;; esac
   done
   [ -n "$_lwjgl_outputs" ] || die "NATIVES contains no LWJGL shared libraries for $MC_VERSION"
-  [ -f "$LWJGL_SUNOS_LIBFFI_A" ] || die "LWJGL libffi archive is missing: $LWJGL_SUNOS_LIBFFI_A"
-  _ffi_identity=$(cksum "$LWJGL_SUNOS_LIBFFI_A" 2>/dev/null | awk '{print $1 ":" $2}') || die "cannot identify libffi archive"
+  is_dry || [ -f "$LWJGL_SUNOS_LIBFFI_A" ] || die "LWJGL libffi archive is missing: $LWJGL_SUNOS_LIBFFI_A"
+  if is_dry; then _ffi_identity=dry-run; else
+    _ffi_identity=$(cksum "$LWJGL_SUNOS_LIBFFI_A" 2>/dev/null) || die "cannot identify libffi archive"
+  fi
   _java_version=$($JAVA_HOME/bin/java -version 2>&1 | head -1 || printf unknown)
   _ant_version=$(ant -version 2>&1 | head -1 || printf unknown)
   cache_identity lwjgl3 "$_src" "$PATCHES/lwjgl3" "targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native};args=$LWJGL_ANT_ARGS;static_runtime=$LWJGL_SUNOS_STATIC_RUNTIME;ffi=$_ffi_identity;java=$JAVA_HOME:$_java_version;ant=$_ant_version;outputs=$_lwjgl_outputs"
@@ -323,7 +325,9 @@ comp_shaderc() {
     fi
     _dep_commit=$(git -C "$_src/third_party/$_dep" rev-parse HEAD 2>/dev/null || true)
     if [ -n "$_dep_commit" ]; then
-      _shaderc_deps="$_shaderc_deps;$_dep=$_dep_commit"
+      _dep_state=$(git -C "$_src/third_party/$_dep" status --porcelain 2>/dev/null || printf unknown)
+      [ -z "$_dep_state" ] || _shaderc_unknown=1
+      _shaderc_deps="$_shaderc_deps;$_dep=$_dep_commit;state=$_dep_state"
     else
       _shaderc_deps="$_shaderc_deps;$_dep=unversioned"
       _shaderc_unknown=1
