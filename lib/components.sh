@@ -186,7 +186,7 @@ comp_openal() {
     -DALSOFT_BACKEND_SOLARIS=ON -DALSOFT_BACKEND_OSS=ON \
     -DALSOFT_BACKEND_ALSA=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF \
     -DALSOFT_BACKEND_PULSEAUDIO=OFF -DALSOFT_BACKEND_SNDIO=OFF \
-    -DCMAKE_SHARED_LINKER_FLAGS="$_openal_runtime_flags" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,gnu-version-script-compat $_openal_runtime_flags" \
     $OPENAL_CMAKE_ARGS
   stage_lib "$BUILD_DIR" 'libopenal.so*' libopenal.so
 }
