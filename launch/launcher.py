@@ -26,6 +26,29 @@ def fail(message):
     raise SystemExit(1)
 
 
+def runtime_environment(native_dir, source=None):
+    env = dict(os.environ if source is None else source)
+    ld_paths = [str(native_dir), *DEFAULT_LIBRARY_PATH.split(":"),
+                *[p for p in env.get("SOLARIS_LIBRARY_PATH", "").split(":") if p]]
+    if env.get("MESA_LIBRARY_PATH"):
+        ld_paths.append(env["MESA_LIBRARY_PATH"])
+    if env.get("VULKAN_LIBRARY_PATH"):
+        ld_paths.append(env["VULKAN_LIBRARY_PATH"])
+    if env.get("LD_LIBRARY_PATH"):
+        ld_paths.append(env["LD_LIBRARY_PATH"])
+    env["LD_LIBRARY_PATH"] = ":".join(ld_paths)
+    return env
+
+
+def log_vulkan_configuration(env):
+    for name in ("VULKAN_LIBRARY_PATH", "VK_ICD_FILENAMES"):
+        value = env.get(name)
+        if value:
+            print(f"launcher: {name}={value}", file=sys.stderr)
+        else:
+            print(f"launcher: {name} is not set", file=sys.stderr)
+
+
 def validate_url(url):
     parsed = urllib.parse.urlparse(url)
     if (parsed.scheme != "https" or parsed.hostname not in OFFICIAL_DOWNLOAD_HOSTS or
@@ -381,19 +404,12 @@ def main():
     print(f"launcher: Minecraft {version}, Java {required_java or 'unspecified'}, natives={native_dir}", file=sys.stderr)
     print(f"launcher: classpath contains {len(classpath)} jars; credentials are not logged", file=sys.stderr)
 
-    extra_paths = os.environ.get("SOLARIS_LIBRARY_PATH", "")
-    ld_paths = [str(native_dir), *DEFAULT_LIBRARY_PATH.split(":"), *[p for p in extra_paths.split(":") if p]]
-    if os.environ.get("MESA_LIBRARY_PATH"):
-        ld_paths.append(os.environ["MESA_LIBRARY_PATH"])
-    if os.environ.get("VULKAN_LIBRARY_PATH"):
-        ld_paths.append(os.environ["VULKAN_LIBRARY_PATH"])
-    if os.environ.get("LD_LIBRARY_PATH"):
-        ld_paths.append(os.environ["LD_LIBRARY_PATH"])
-    os.environ["LD_LIBRARY_PATH"] = ":".join(ld_paths)
-    mesa_override = os.environ.get("MESA_GL_VERSION_OVERRIDE")
+    runtime_env = runtime_environment(native_dir)
+    mesa_override = runtime_env.get("MESA_GL_VERSION_OVERRIDE")
     if mesa_override:
-        os.environ["MESA_GL_VERSION_OVERRIDE"] = mesa_override
-    os.execve(java, [java, *args, main_class, *game_args], os.environ)
+        runtime_env["MESA_GL_VERSION_OVERRIDE"] = mesa_override
+    log_vulkan_configuration(runtime_env)
+    os.execve(java, [java, *args, main_class, *game_args], runtime_env)
 
 
 if __name__ == "__main__":

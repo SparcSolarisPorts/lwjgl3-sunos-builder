@@ -91,6 +91,44 @@ class LauncherMetadataTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 launcher.safe_destination(pathlib.Path(temp), "../escape.jar")
 
+    def test_runtime_environment_preserves_and_extends_library_paths(self):
+        source = {
+            "SOLARIS_LIBRARY_PATH": "/opt/solaris/lib",
+            "MESA_LIBRARY_PATH": "/opt/mesa/lib",
+            "VULKAN_LIBRARY_PATH": "/opt/vulkan/lib",
+            "LD_LIBRARY_PATH": "/custom/lib",
+            "VK_ICD_FILENAMES": "/etc/vulkan/icd.d/sparc.json",
+        }
+        env = launcher.runtime_environment(pathlib.Path("/game/bin"), source)
+        entries = env["LD_LIBRARY_PATH"].split(":")
+        self.assertEqual(entries[0], "/game/bin")
+        self.assertIn("/opt/solaris/lib", entries)
+        self.assertIn("/opt/mesa/lib", entries)
+        self.assertIn("/opt/vulkan/lib", entries)
+        self.assertEqual(entries[-1], "/custom/lib")
+        self.assertEqual(env["VK_ICD_FILENAMES"], source["VK_ICD_FILENAMES"])
+        self.assertEqual(source["LD_LIBRARY_PATH"], "/custom/lib")
+
+    def test_runtime_environment_adds_no_unconfigured_vulkan_defaults(self):
+        env = launcher.runtime_environment(pathlib.Path("/game/bin"), {})
+        self.assertEqual(env["LD_LIBRARY_PATH"], ":".join([
+            "/game/bin", *launcher.DEFAULT_LIBRARY_PATH.split(":")]))
+        self.assertNotIn("VULKAN_LIBRARY_PATH", env)
+        self.assertNotIn("VK_ICD_FILENAMES", env)
+
+    def test_vulkan_diagnostics_report_only_optional_vulkan_settings(self):
+        stream = io.StringIO()
+        with mock.patch.object(launcher.sys, "stderr", stream):
+            launcher.log_vulkan_configuration({
+                "VULKAN_LIBRARY_PATH": "/opt/vulkan/lib",
+                "VK_ICD_FILENAMES": "/etc/vulkan/icd.d/sparc.json",
+                "MC_ACCESS_TOKEN": "must-not-appear",
+            })
+        output = stream.getvalue()
+        self.assertIn("VULKAN_LIBRARY_PATH=/opt/vulkan/lib", output)
+        self.assertIn("VK_ICD_FILENAMES=/etc/vulkan/icd.d/sparc.json", output)
+        self.assertNotIn("must-not-appear", output)
+
     def test_asset_objects_download_from_hash_path(self):
         payload = b"asset-data"
         digest = hashlib.sha1(payload).hexdigest()
