@@ -158,12 +158,14 @@ need for a compatible SPARC JDK or Solaris native libraries.
 
 ## Requirements
 
-gcc/g++ (`-m64`), **GNU make (`gmake`)**, cmake, git, Apache Ant, a SPARCV9 JDK, autoconf
+gcc/g++ (`-m64`), **GNU make (`gmake`)**, cmake, git, the **Apache Ant package** (`ant`), a SPARCV9 JDK, autoconf
 (jemalloc from git), autoconf/automake/libtool (libffi from git), X11 dev headers.
 The libffi configure step disables Automake dependency tracking because older
 Solaris Automake setups cannot bootstrap the generated dependency fragments.
 All project builds use `gmake`; install it and keep it available as `gmake` in
-`PATH` (or set `MAKE=/path/to/gmake`). Override `CC CXX MAKE CMAKE
+`PATH` (or set `MAKE=/path/to/gmake`). Install the Apache Ant package and keep
+`ant` available in `PATH`; LWJGL's native and Java build uses it directly.
+Override `CC CXX MAKE CMAKE
 ARCH_FLAGS CFLAGS LDFLAGS JOBS`, `LWJGL_ANT_TARGETS`, `LWJGL_ANT_ARGS`,
 `OPENAL_CMAKE_ARGS`, `SDL3_CMAKE_ARGS` as needed.
 

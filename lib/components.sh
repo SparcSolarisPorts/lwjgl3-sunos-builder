@@ -62,8 +62,10 @@ comp_lwjgl3() {
 
   lwjgl_preflight "$_src"
 
-  # Ant targets differ slightly between 3.1.x and 3.4.x; override if needed.
-  _targets=${LWJGL_ANT_TARGETS:-generate compile compile-native}
+  # LWJGL keeps template compilation separate from generation.  Generate first
+  # fails unless compile-templates has already run; override if needed for a
+  # different LWJGL target layout.
+  _targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native}
   # -k: keep going so one failing optional binding does not hide the ones
   # Minecraft needs; verify_natives is the real pass/fail gate.
   ( cd "$_src" 2>/dev/null || is_dry
