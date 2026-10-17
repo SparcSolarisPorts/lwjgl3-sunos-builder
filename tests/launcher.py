@@ -97,7 +97,7 @@ class LauncherMetadataTests(unittest.TestCase):
             "MESA_LIBRARY_PATH": "/opt/mesa/lib",
             "VULKAN_LIBRARY_PATH": "/opt/vulkan/lib",
             "LD_LIBRARY_PATH": "/custom/lib",
-            "VK_ICD_FILENAMES": "/etc/vulkan/icd.d/sparc.json",
+            "VK_DRIVER_FILES": "/etc/vulkan/icd.d/sparc.json",
         }
         env = launcher.runtime_environment(pathlib.Path("/game/bin"), source)
         entries = env["LD_LIBRARY_PATH"].split(":")
@@ -106,7 +106,7 @@ class LauncherMetadataTests(unittest.TestCase):
         self.assertIn("/opt/mesa/lib", entries)
         self.assertIn("/opt/vulkan/lib", entries)
         self.assertEqual(entries[-1], "/custom/lib")
-        self.assertEqual(env["VK_ICD_FILENAMES"], source["VK_ICD_FILENAMES"])
+        self.assertEqual(env["VK_DRIVER_FILES"], source["VK_DRIVER_FILES"])
         self.assertEqual(source["LD_LIBRARY_PATH"], "/custom/lib")
 
     def test_runtime_environment_adds_no_unconfigured_vulkan_defaults(self):
@@ -114,19 +114,20 @@ class LauncherMetadataTests(unittest.TestCase):
         self.assertEqual(env["LD_LIBRARY_PATH"], ":".join([
             "/game/bin", *launcher.DEFAULT_LIBRARY_PATH.split(":")]))
         self.assertNotIn("VULKAN_LIBRARY_PATH", env)
+        self.assertNotIn("VK_DRIVER_FILES", env)
         self.assertNotIn("VK_ICD_FILENAMES", env)
 
     def test_vulkan_diagnostics_report_only_optional_vulkan_settings(self):
         stream = io.StringIO()
         with mock.patch.object(launcher.sys, "stderr", stream):
             launcher.log_vulkan_configuration({
-                "VULKAN_LIBRARY_PATH": "/opt/vulkan/lib",
-                "VK_ICD_FILENAMES": "/etc/vulkan/icd.d/sparc.json",
+                "VULKAN_LIBRARY_PATH": "/opt/vulkan-1.3.250/lib",
+                "VK_DRIVER_FILES": "/etc/vulkan/icd.d/lavapipe.json",
                 "MC_ACCESS_TOKEN": "must-not-appear",
             })
         output = stream.getvalue()
-        self.assertIn("VULKAN_LIBRARY_PATH=/opt/vulkan/lib", output)
-        self.assertIn("VK_ICD_FILENAMES=/etc/vulkan/icd.d/sparc.json", output)
+        self.assertIn("VULKAN_LIBRARY_PATH=/opt/vulkan-1.3.250/lib", output)
+        self.assertIn("VK_DRIVER_FILES=/etc/vulkan/icd.d/lavapipe.json", output)
         self.assertNotIn("must-not-appear", output)
 
     def test_asset_objects_download_from_hash_path(self):

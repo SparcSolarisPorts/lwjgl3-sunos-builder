@@ -41,7 +41,7 @@ def runtime_environment(native_dir, source=None):
 
 
 def log_vulkan_configuration(env):
-    for name in ("VULKAN_LIBRARY_PATH", "VK_ICD_FILENAMES"):
+    for name in ("VULKAN_LIBRARY_PATH", "VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         value = env.get(name)
         if value:
             print(f"launcher: {name}={value}", file=sys.stderr)
