@@ -61,7 +61,7 @@ The set per release matches what Mojang's version JSONs ship for Linux
 | `libopenal.so` | OpenAL Soft 1.23.1 | all; Solaris + OSS backends, RTKit/DBus off, Solaris GNU version-script compatibility enabled, dynamic GCC C++ runtime by default |
 | `libfreetype.so` | FreeType `VER-2-13-2` (1.21), `VER-2-14-1` (26.1/26.2), `VER-2-14-3` (26.3+) | 1.21 and newer (LWJGL >= 3.3.3) |
 | `libshaderc.so`, `libspirv-cross.so` | LWJGL-CI/shaderc, LWJGL-CI/SPIRV-Cross, tag `LWJGL-3.4.3` | 26.2+ |
-| `libSDL3.so` | libsdl-org/SDL `release-3.4.18` | 26.3+ only, Vulkan enabled on Solaris |
+| `libSDL3.so` | libsdl-org/SDL `release-3.4.18` | 26.3+ only, Vulkan enabled on Solaris, DBus disabled to avoid Linux DBus headers |
 
 jemalloc and OpenAL Soft keep a stable C ABI (so does GLFW), so every release
 pins the same ref by default; override `*_REF` in `version.env` for an exact match.
@@ -165,6 +165,11 @@ Solaris Automake setups cannot bootstrap the generated dependency fragments.
 All project builds use `gmake`; install it and keep it available as `gmake` in
 `PATH` (or set `MAKE=/path/to/gmake`). Install the Apache Ant package and keep
 `ant` available in `PATH`; LWJGL's native and Java build uses it directly.
+GNU make builds automatically use the online processor count (`getconf`, then
+`psrinfo`, with a fallback of 4); set `JOBS=N` to override it, for example
+`JOBS=32 ./build.sh 26.3`. `JOBS` must be a positive integer and controls GNU
+make jobs for CMake, libffi, and jemalloc builds. LWJGL Ant's SunOS config has
+its own parallel compiler/linker tasks, whose concurrency is managed by Ant.
 C++ native libraries use the shared GCC runtime by default, so the matching
 SPARC64 `libstdc++.so` and its Solaris runtime path must be available when
 running Minecraft. Set `LWJGL_SUNOS_STATIC_RUNTIME=1` only when the matching

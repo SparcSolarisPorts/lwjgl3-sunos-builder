@@ -26,8 +26,15 @@ mc_main() {
   SDL3_CMAKE_ARGS=${SDL3_CMAKE_ARGS-}
   SHADERC_CMAKE_ARGS=${SHADERC_CMAKE_ARGS-}
   SPVC_CMAKE_ARGS=${SPVC_CMAKE_ARGS-}
-  JOBS=${JOBS:-$(psrinfo 2>/dev/null | wc -l | tr -d ' ')}
-  case "$JOBS" in ''|0) JOBS=4 ;; esac
+  if [ -z "${JOBS:-}" ]; then
+    JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+    case "$JOBS" in ''|*[!0-9]*) JOBS=$(psrinfo 2>/dev/null | wc -l | tr -d ' ') ;; esac
+    case "$JOBS" in ''|0|*[!0-9]*) JOBS=4 ;; esac
+  fi
+  case "$JOBS" in
+    ''|*[!0-9]*|0) die "JOBS must be a positive integer (got '$JOBS')" ;;
+  esac
+  log "using $JOBS build job(s)"
   export JAVA_HOME
 
   if [ "$#" -eq 0 ]; then set -- $COMPONENTS verify; fi
