@@ -148,13 +148,19 @@ comp_jemalloc() {
   ( cd "$_src" 2>/dev/null || is_dry
     # git checkouts ship configure.ac only; release tarballs ship configure.
     if is_dry || [ ! -x ./configure ]; then run autoconf; fi
-    # jemalloc 5.3.0 has no --disable-background-thread option.  Pretend the
-    # Darwin unfair-lock probe succeeded so its optional background thread is
-    # not enabled; otherwise Solaris reaches pthread_setaffinity_np/cpuset_t,
-    # which it does not provide.
+    # jemalloc 5.3.0 has no --disable-background-thread option. Keep the
+    # unfair-lock probe disabled so Solaris does not include os/lock.h, then
+    # remove the separate background-thread define after configure; its
+    # fallback uses pthread_setaffinity_np/cpuset_t, which Solaris lacks.
     run env CC="$CC" CFLAGS="$ARCH_FLAGS -fPIC $CFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
-      je_cv_os_unfair_lock=yes \
+      je_cv_os_unfair_lock=no \
       ./configure --with-jemalloc-prefix=je_ --disable-initial-exec-tls --disable-cxx
+    if is_dry; then :; else
+      _defs=include/jemalloc/internal/jemalloc_internal_defs.h
+      [ -f "$_defs" ] || die "jemalloc config header not produced: $_src/$_defs"
+      sed 's/^#define JEMALLOC_BACKGROUND_THREAD.*/\\/\\* #undef JEMALLOC_BACKGROUND_THREAD \\*\\//' \
+        "$_defs" > "$_defs.tmp" && mv "$_defs.tmp" "$_defs"
+    fi
     run "$MAKE" -j "$JOBS" build_lib_shared )
   stage_lib "$_src/lib" 'libjemalloc.so*' libjemalloc.so
 }
