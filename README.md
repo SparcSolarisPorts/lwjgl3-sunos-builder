@@ -35,7 +35,9 @@ mirror in `cache/` into `work/<mc>/`, so your own checkouts are never modified.
 Re-running is safe: already-applied patches are detected and skipped. Use
 `./build.sh clean` to remove generated outputs and cached mirrors when you need
 to force fresh source downloads and ref discovery; it does not remove patches
-or release configuration.
+or release configuration. On Solaris, the builder clones each new mirror from
+inside `cache/` to avoid an old Git argument-parsing issue with absolute mirror
+paths.
 
 Run Minecraft with `-Dorg.lwjgl.librarypath=<bin/mc>` and put the rebuilt
 `lwjgl.jar` ahead of the stock core jar on the classpath.

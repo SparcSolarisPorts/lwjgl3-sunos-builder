@@ -51,7 +51,11 @@ mirror_repo() {
       warn "OFFLINE set but no cached mirror for $1"; return 1
     fi
     log "mirroring $1 ($2)"
-    run git clone -q --mirror "$2" "$MIRROR" || return 1
+    # Clone from inside CACHE with a relative destination. This avoids an
+    # old Solaris Git argument parser treating the absolute destination as a
+    # protocol name, while MIRROR remains absolute for later operations.
+    _mirror_name=$1-$_key.git
+    ( CDPATH= cd "$CACHE" && run git clone -q --mirror "$2" "$_mirror_name" ) || return 1
   fi
   _MIRRORED="$_MIRRORED $MIRROR"
 }
