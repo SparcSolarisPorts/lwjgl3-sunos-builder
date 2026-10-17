@@ -50,6 +50,18 @@ COMPS="lwjgl3 glfw sdl3 libffi jemalloc openal freetype shaderc spvc"
 upper() { printf '%s' "$1" | tr 'a-z' 'A-Z'; }
 comp_var() { case "$1" in lwjgl3) echo LWJGL ;; *) upper "$1" ;; esac; }
 
+# component_active ENV COMPONENT -- version.env's COMPONENTS list is the
+# build's source of truth.  Ignore stale patch directories copied from another
+# release instead of trying to resolve refs for components that are not built.
+component_active() {
+  _env=$1; _want=$2
+  _components=$(sh -c '. "$1"; printf "%s" "$COMPONENTS"' sh "$_env")
+  for _c in $_components; do
+    [ "$_c" = "$_want" ] && return 0
+  done
+  return 1
+}
+
 # _check MIRROR COMMIT PATCHDIR OUTPREFIX -- runs in a subshell so the GIT_*
 # variables never leak. Writes OUTPREFIX.status and OUTPREFIX.detail.
 _check() {
@@ -88,6 +100,10 @@ for mc in $MCS; do
   envf=$ROOT/mc/$mc/version.env
   [ -f "$envf" ] || { warn "no mc/$mc/version.env, skipping"; continue; }
   for comp in $COMPS; do
+    if ! component_active "$envf" "$comp"; then
+      echo "-" > "$TMP/st.$mc.$comp"
+      continue
+    fi
     pd=$ROOT/mc/$mc/patches/$comp
     n=$(ls "$pd"/*.patch 2>/dev/null | wc -l | tr -d ' ')
     if [ "$n" -eq 0 ]; then echo "-" > "$TMP/st.$mc.$comp"; continue; fi

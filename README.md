@@ -63,8 +63,8 @@ The LWJGL tag is the one thing that differs per release:
 
 | Minecraft | LWJGL | patch set |
 |---|---|---|
-| 26.3, 26.4 | 3.4.3 | lwjgl3, sdl3, shaderc |
-| 26.1, 26.2 | 3.4.1 | lwjgl3, glfw |
+| 26.3, 26.4 | 3.4.3 | lwjgl3, sdl3, shaderc, spvc |
+| 26.1, 26.2 | 3.4.1 | lwjgl3, glfw, shaderc, spvc (26.2) |
 | 1.21 (also 1.20.5+) | 3.3.3 | lwjgl3, glfw |
 | 1.19, 1.20, 1.20.1 | 3.3.1 | lwjgl3, glfw |
 | 1.15 - 1.18 | 3.2.2 | lwjgl3, glfw (dyncall shim) |
@@ -86,11 +86,13 @@ GLFW_REF=3.4 ./build.sh check    # try a different ref without editing version.e
 
 Patches are applied in order to a throw-away index built from the cached
 mirror (no checkout, nothing built), so a patch that depends on the one before
-it is judged correctly. Output is a release x component matrix (`OK`, `3WAY`,
-`FAIL n/m`, `NOREF`, `NOFETCH`) followed by the failing hunks, grouped when
-several releases share the same ref. Exit status is non-zero if anything fails.
-The builder itself applies exactly the same way and stops at the first patch
-that does not apply; `ALLOW_3WAY=1` lets it use `--3way` results.
+it is judged correctly. Only components listed in each release's `COMPONENTS`
+value are checked; stale patch directories copied from another release are
+ignored. Output is a release x component matrix (`OK`, `3WAY`, `FAIL n/m`,
+`NOREF`, `NOFETCH`) followed by the failing hunks, grouped when several
+releases share the same ref. Exit status is non-zero if anything fails. The
+builder itself applies exactly the same way and stops at the first patch that
+does not apply; `ALLOW_3WAY=1` lets it use `--3way` results.
 
 ## Patches
 
@@ -122,6 +124,29 @@ tools/extract-fork-patches.sh lwjgl3 ~/git/lwjgl3 https://github.com/LWJGL/lwjgl
 Review, then move the good ones into `patches/lwjgl3/` (drop the hand-written
 `0001-sunos-platform.patch` if the fork's commit supersedes it). The build
 warns if the patched LWJGL tree contains no SunOS handling at all.
+
+## SPARC JDK and hardware notes
+
+For newer SPARC/Solaris JDK builds, see the
+[SparcSolarisPorts OpenJDK downloads and build information](https://asbestosstar.egoism.jp/sparcsolarisports/openjdk).
+Choose a JDK that matches the Minecraft version and LWJGL requirements; it must
+provide a working SPARCV9 `javac`, `java`, and JNI headers, including
+`$JAVA_HOME/include/jni.h`.
+
+The SPARC T8 and M8 systems are strong candidates for running Minecraft on
+Solaris. Oracle's [SPARC T8-1 data sheet](https://www.oracle.com/a/ocom/docs/sparc-t8-1-ds-3864201.pdf)
+and the [SPARC performance discussion](https://www.solaris.wtf/blog/sparc-performance-still-rulez/)
+describe benchmark results in which SPARC systems delivered about twice the
+Java throughput of some contemporary competitor systems and led on per-core
+critical jOPS. These are workload- and configuration-dependent benchmark
+claims, not a guarantee for every Minecraft setup; compare the exact JVM,
+Minecraft version, memory configuration, and workload before making a
+purchasing or SLA decision.
+
+SPARC T8/M8 processors also include Oracle's Data Analytics Accelerator (DAX)
+software-in-silicon features. See [Oracle's DAX overview video](https://www.youtube.com/watch?v=fxm_Wf7SlXE&xstg=CAMSBhUDzO3xHw%3D%3D)
+for background. DAX is not required by this builder and does not replace the
+need for a compatible SPARC JDK or Solaris native libraries.
 
 ## Requirements
 
