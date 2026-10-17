@@ -217,6 +217,14 @@ cache_tool_version() {
   CACHE_TOOL_VERSION=${_ct_out:-unknown}
 }
 
+# cache_tool_fingerprint COMMAND -- include resolved path and executable bytes.
+cache_tool_fingerprint() {
+  _ct_path=$(command -v "$1" 2>/dev/null) || { CACHE_SAFE=0; CACHE_TOOL_FINGERPRINT=unknown; return 0; }
+  [ -f "$_ct_path" ] && [ -r "$_ct_path" ] || { CACHE_SAFE=0; CACHE_TOOL_FINGERPRINT=unknown; return 0; }
+  cache_checksum "$_ct_path" || { CACHE_SAFE=0; CACHE_TOOL_FINGERPRINT=unknown; return 0; }
+  CACHE_TOOL_FINGERPRINT="$_ct_path:$CACHE_SUM"
+}
+
 # cache_identity NAME SRCDIR PATCHDIR EXTRA
 # Sets CACHE_KEY and CACHE_ID from the resolved source, ordered patch contents,
 # recipe parameters, target flags, selected toolchain versions and environment.
@@ -224,10 +232,20 @@ cache_identity() {
   _ci_name=$1; _ci_src=$2; _ci_patchdir=$3; _ci_extra=$4
   CACHE_SAFE=1
   cache_valid_name "$_ci_name" || die "invalid cache component name: $_ci_name"
+  if is_dry; then
+    CACHE_SAFE=0; CACHE_ID=dry-run; CACHE_KEY=dry-run; CACHE_DIR=$ARTIFACTS/$_ci_name/dry-run
+    return 0
+  fi
+  _ci_tmp=${TMPDIR:-/tmp}/lwjgl-cache-id-$$
+  _ci_n=0
+  while ! mkdir "$_ci_tmp.$_ci_n" 2>/dev/null; do
+    _ci_n=$((_ci_n + 1))
+    [ "$_ci_n" -lt 100 ] || { CACHE_SAFE=0; break; }
+  done
+  _ci_tmp=$_ci_tmp.$_ci_n
+  [ -d "$_ci_tmp" ] || { CACHE_SAFE=0; _ci_tmp=${TMPDIR:-/tmp}/lwjgl-cache-id-failed-$$; }
   _ci_commit=$(git -C "$_ci_src" rev-parse HEAD 2>/dev/null) || { _ci_commit=unknown; CACHE_SAFE=0; }
   _ci_tree=
-  _ci_tmp=${TMPDIR:-/tmp}/lwjgl-cache-id-$$
-  _ci_cc=unknown; _ci_cxx=unknown; _ci_make=unknown; _ci_cmake=unknown
   if [ "$_ci_commit" != unknown ]; then
     if git -C "$_ci_src" diff --binary HEAD > "$_ci_tmp.diff" 2>/dev/null; then
       cache_checksum "$_ci_tmp.diff" || { CACHE_SAFE=0; CACHE_SUM=unknown; }
@@ -235,33 +253,46 @@ cache_identity() {
     else
       CACHE_SAFE=0; _ci_tree=diff=unknown
     fi
-    if git -C "$_ci_src" ls-files --others --exclude-standard > "$_ci_tmp.files" 2>/dev/null; then
-      _ci_untracked=
-      while IFS= read -r _ci_file; do
-        [ -n "$_ci_file" ] || continue
-        cache_valid_name "$(basename "$_ci_file")" || { CACHE_SAFE=0; continue; }
-        cache_checksum "$_ci_src/$_ci_file" || { CACHE_SAFE=0; continue; }
-        _ci_untracked="$_ci_untracked;$_ci_file=$CACHE_SUM"
-      done < "$_ci_tmp.files"
-      _ci_tree="$_ci_tree;untracked=$_ci_untracked"
-    else
-      CACHE_SAFE=0; _ci_tree="$_ci_tree;untracked=unknown"
-    fi
+    for _ci_mode in --exclude-standard --ignored; do
+      _ci_tag=$(printf '%s' "$_ci_mode" | tr -d '-')
+      if [ "$_ci_mode" = --ignored ]; then _ci_list_args="--ignored --exclude-standard"; else _ci_list_args=$_ci_mode; fi
+      if git -C "$_ci_src" ls-files --others $_ci_list_args > "$_ci_tmp.files" 2>/dev/null; then
+        _ci_list=
+        while IFS= read -r _ci_file; do
+          [ -n "$_ci_file" ] || continue
+          case $_ci_file in *'|'*|*';'*|*'='*) CACHE_SAFE=0; continue ;; esac
+          [ ! -L "$_ci_src/$_ci_file" ] && [ -f "$_ci_src/$_ci_file" ] || { CACHE_SAFE=0; continue; }
+          cache_checksum "$_ci_src/$_ci_file" || { CACHE_SAFE=0; continue; }
+          _ci_list="$_ci_list|$_ci_file=$CACHE_SUM"
+        done < "$_ci_tmp.files"
+        _ci_tree="$_ci_tree;${_ci_tag}=$_ci_list"
+      else
+        CACHE_SAFE=0; _ci_tree="$_ci_tree;${_ci_tag}=unknown"
+      fi
+    done
     _ci_submodules=$(git -C "$_ci_src" submodule status 2>/dev/null) || { CACHE_SAFE=0; _ci_submodules=unknown; }
     _ci_tree="$_ci_tree;submodules=$_ci_submodules"
   else
     _ci_tree=unknown
   fi
-  rm -f "$_ci_tmp.diff" "$_ci_tmp.files"
+  cache_tool_fingerprint "$CC"; _ci_cc_path=$CACHE_TOOL_FINGERPRINT
   cache_tool_version "$(command -v "$CC" 2>/dev/null || printf '%s' "$CC")" --version; _ci_cc=$CACHE_TOOL_VERSION
+  cache_tool_fingerprint "$CXX"; _ci_cxx_path=$CACHE_TOOL_FINGERPRINT
   cache_tool_version "$(command -v "$CXX" 2>/dev/null || printf '%s' "$CXX")" --version; _ci_cxx=$CACHE_TOOL_VERSION
+  cache_tool_fingerprint "$MAKE"; _ci_make_path=$CACHE_TOOL_FINGERPRINT
   cache_tool_version "$(command -v "$MAKE" 2>/dev/null || printf '%s' "$MAKE")" --version; _ci_make=$CACHE_TOOL_VERSION
+  cache_tool_fingerprint "$CMAKE"; _ci_cmake_path=$CACHE_TOOL_FINGERPRINT
   cache_tool_version "$(command -v "$CMAKE" 2>/dev/null || printf '%s' "$CMAKE")" --version; _ci_cmake=$CACHE_TOOL_VERSION
-  _ci_ant=$(command -v ant 2>/dev/null || printf unknown)
-  [ "$_ci_cc" != unknown ] && [ "$_ci_cxx" != unknown ] && [ "$_ci_make" != unknown ] && [ "$_ci_cmake" != unknown ] || CACHE_SAFE=0
-  if [ "$_ci_ant" != unknown ]; then cache_tool_version "$_ci_ant" -version; _ci_ant="$_ci_ant:$CACHE_TOOL_VERSION"; fi
+  _ci_ant=$(command -v ant 2>/dev/null || true)
+  if [ -n "$_ci_ant" ]; then
+    cache_tool_fingerprint ant; _ci_ant_path=$CACHE_TOOL_FINGERPRINT
+    cache_tool_version "$_ci_ant" -version; _ci_ant="$_ci_ant_path:$CACHE_TOOL_VERSION"
+  else _ci_ant=unknown; fi
+  _ci_tools="CC=$_ci_cc_path:$_ci_cc;CXX=$_ci_cxx_path:$_ci_cxx;MAKE=$_ci_make_path:$_ci_make;CMAKE=$_ci_cmake_path:$_ci_cmake;ANT=$_ci_ant"
   _ci_java=${JAVA_HOME:-unknown}
   if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+    cache_checksum "$JAVA_HOME/bin/java" || { CACHE_SAFE=0; CACHE_SUM=unknown; }
+    _ci_java="$JAVA_HOME/bin/java:$CACHE_SUM"
     cache_tool_version "$JAVA_HOME/bin/java" -version
     _ci_java="$_ci_java:$CACHE_TOOL_VERSION"
   elif [ -n "${JAVA_HOME:-}" ]; then
@@ -278,11 +309,15 @@ cache_identity() {
       _ci_patches="$_ci_patches;$_ci_base=$CACHE_SUM"
     done
   fi
-  if [ -n "$_ci_patches" ]; then :; else _ci_patches=none; fi
-  CACHE_ID=$(printf 'format=3\ncomponent=%s\ncommit=%s\ntree=%s\npatches=%s\nplatform=%s\nhost=%s\nexpect_machine=%s\narch=%s\nCC=%s\nCXX=%s\nCFLAGS=%s\nCXXFLAGS=%s\nLDFLAGS=%s\nDEPS=%s\nMAKE=%s\nCMAKE=%s\nANT=%s\nJAVA=%s\nJOBS=%s\nextra=%s\n' \
+  [ -n "$_ci_patches" ] || _ci_patches=none
+  CACHE_ID=$(printf 'format=4\ncomponent=%s\ncommit=%s\ntree=%s\npatches=%s\nplatform=%s\nhost=%s\nexpect_machine=%s\narch=%s\nCC=%s\nCXX=%s\nCFLAGS=%s\nCXXFLAGS=%s\nLDFLAGS=%s\nDEPS=%s\nTOOLS=%s\nJAVA=%s\nJOBS=%s\nextra=%s\n' \
     "$_ci_name" "$_ci_commit" "$_ci_tree" "$_ci_patches" "$(uname -s 2>/dev/null || printf unknown)" \
     "$(uname -m 2>/dev/null || printf unknown)" "${EXPECT_MACHINE:-002b}" "${ARCH_FLAGS:-}" "$CC:$_ci_cc" "$CXX:$_ci_cxx" "${CFLAGS:-}" "${CXXFLAGS:-}" "${LDFLAGS:-}" "$_ci_dep_env" \
-    "$_ci_make" "$_ci_cmake" "$_ci_ant" "$_ci_java" "${JOBS:-}" "$_ci_extra")
+    "$_ci_tools" "$_ci_java" "${JOBS:-}" "$_ci_extra")
+  case "$_ci_extra${CC}${CXX}${CFLAGS:-}${CXXFLAGS:-}${LDFLAGS:-}${CPPFLAGS:-}${CPATH:-}${C_INCLUDE_PATH:-}${CPLUS_INCLUDE_PATH:-}${LIBRARY_PATH:-}${SDKROOT:-}${SYSROOT:-}${CMAKE_PREFIX_PATH:-}${CMAKE_TOOLCHAIN_FILE:-}${PKG_CONFIG_PATH:-}${PKG_CONFIG_LIBDIR:-}${PATH:-}${_ci_cc_path}${_ci_cxx_path}${_ci_make_path}${_ci_cmake_path}${_ci_ant}${_ci_java}" in *'|'*|*';'*) CACHE_SAFE=0 ;; esac
+  case "$_ci_extra" in *'='*=*) CACHE_SAFE=0 ;; esac
+  case "${CC}${CXX}${CFLAGS:-}${CXXFLAGS:-}${LDFLAGS:-}${CPPFLAGS:-}${CPATH:-}${C_INCLUDE_PATH:-}${CPLUS_INCLUDE_PATH:-}${LIBRARY_PATH:-}${SDKROOT:-}${SYSROOT:-}${CMAKE_PREFIX_PATH:-}${CMAKE_TOOLCHAIN_FILE:-}${PKG_CONFIG_PATH:-}${PKG_CONFIG_LIBDIR:-}${PATH:-}" in *'|'*|*';'*) CACHE_SAFE=0 ;; esac
+  rm -rf "$_ci_tmp"
   cache_digest "$CACHE_ID" || die "cannot checksum cache identity"
   CACHE_KEY=$CACHE_DIGEST
   CACHE_DIR=$ARTIFACTS/$_ci_name/$CACHE_KEY
@@ -291,18 +326,34 @@ cache_identity() {
 # cache_entry_valid DIR ID OUTPUT... -- require metadata, checksum and ELF validity.
 cache_entry_valid() {
   _ce_dir=$1; _ce_id=$2; shift 2
+  [ "$#" -gt 0 ] || return 1
   [ ! -L "$_ce_dir" ] && [ -d "$_ce_dir" ] || return 1
   [ ! -L "$_ce_dir/complete" ] && [ -f "$_ce_dir/complete" ] || return 1
   [ ! -L "$_ce_dir/identity" ] && [ -f "$_ce_dir/identity" ] || return 1
   [ ! -L "$_ce_dir/files.manifest" ] && [ -f "$_ce_dir/files.manifest" ] || return 1
+  [ ! -L "$_ce_dir/files" ] && [ -d "$_ce_dir/files" ] || return 1
   printf '%s' "$_ce_id" | cmp -s - "$_ce_dir/identity" || return 1
+  _ce_expected=' '
   for _ce_file in "$@"; do
     cache_valid_name "$_ce_file" || return 1
+    case $_ce_expected in *" $_ce_file "*) return 1 ;; esac
+    _ce_expected="$_ce_expected$_ce_file "
     [ ! -L "$_ce_dir/files/$_ce_file" ] && [ -f "$_ce_dir/files/$_ce_file" ] || return 1
     cache_checksum "$_ce_dir/files/$_ce_file" || return 1
-    grep -F -x "$_ce_file $CACHE_SUM" "$_ce_dir/files.manifest" >/dev/null 2>&1 || return 1
+    _ce_count=$(grep -F -x -c "$_ce_file $CACHE_SUM" "$_ce_dir/files.manifest" 2>/dev/null || true)
+    [ "${_ce_count:-0}" -eq 1 ] || return 1
     case $_ce_file in *.so|*.so.*) elf_check "$_ce_dir/files/$_ce_file" || return 1 ;; esac
   done
+  _ce_manifest_count=$(wc -l < "$_ce_dir/files.manifest" | tr -d ' ')
+  [ "$_ce_manifest_count" -eq "$#" ] || return 1
+  _ce_payload_count=$(find "$_ce_dir/files" -type f -print | wc -l | tr -d ' ')
+  [ "$_ce_payload_count" -eq "$#" ] || return 1
+  while IFS= read -r _ce_line; do
+    _ce_name=${_ce_line%% *}
+    cache_valid_name "$_ce_name" || return 1
+    case $_ce_expected in *" $_ce_name "*) : ;; *) return 1 ;; esac
+  done < "$_ce_dir/files.manifest"
+  return 0
 }
 
 # cache_restore NAME OUTPUT... -- validate and copy a complete entry into OUT.
@@ -329,11 +380,16 @@ cache_restore() {
     cp "$CACHE_DIR/files/$_cr_file" "$_cr_tmp/$_cr_file" || { rm -rf "$_cr_tmp" "$_cr_backup"; return 1; }
   done
   _cr_backed=
+  _cr_installed=
   for _cr_file in "$@"; do
     if [ -e "$OUT/$_cr_file" ] || [ -L "$OUT/$_cr_file" ]; then
       if ! mv "$OUT/$_cr_file" "$_cr_backup/$_cr_file"; then
-        for _cr_done in $_cr_backed; do mv "$_cr_backup/$_cr_done" "$OUT/$_cr_done" 2>/dev/null || true; done
-        rm -rf "$_cr_tmp" "$_cr_backup"
+        _cr_rollback_failed=0
+        for _cr_done in $_cr_backed; do
+          mv "$_cr_backup/$_cr_done" "$OUT/$_cr_done" 2>/dev/null || _cr_rollback_failed=1
+        done
+        rm -rf "$_cr_tmp"
+        if [ "$_cr_rollback_failed" -eq 0 ]; then rm -rf "$_cr_backup"; else warn "restore rollback incomplete; recovery files remain in $_cr_backup"; fi
         return 1
       fi
       _cr_backed="$_cr_backed $_cr_file"
@@ -341,23 +397,22 @@ cache_restore() {
   done
   for _cr_file in "$@"; do
     if ! mv "$_cr_tmp/$_cr_file" "$OUT/$_cr_file"; then
-      for _cr_done in "$@"; do
-        [ -e "$_cr_backup/$_cr_done" ] || [ -L "$_cr_backup/$_cr_done" ] || rm -f "$OUT/$_cr_done"
-      done
-      for _cr_done in "$@"; do
-        if [ -e "$_cr_backup/$_cr_done" ] || [ -L "$_cr_backup/$_cr_done" ]; then mv "$_cr_backup/$_cr_done" "$OUT/$_cr_done"; fi
-      done
-      rm -rf "$_cr_tmp" "$_cr_backup"
+      _cr_rollback_failed=0
+      for _cr_done in $_cr_installed; do rm -f "$OUT/$_cr_done" || _cr_rollback_failed=1; done
+      for _cr_done in $_cr_backed; do mv "$_cr_backup/$_cr_done" "$OUT/$_cr_done" 2>/dev/null || _cr_rollback_failed=1; done
+      rm -rf "$_cr_tmp"
+      if [ "$_cr_rollback_failed" -eq 0 ]; then rm -rf "$_cr_backup"; else warn "restore rollback incomplete; recovery files remain in $_cr_backup"; fi
       return 1
     fi
+    _cr_installed="$_cr_installed $_cr_file"
   done
   rm -rf "$_cr_tmp" "$_cr_backup"
   CACHE_HIT=1
   log "cache hit: $_cr_name ($CACHE_KEY)"
 }
 
-# cache_publish NAME SOURCE_DIR FILE... -- atomically cache complete outputs.
-# A native file is only published after its actual ELF header passes validation.
+# cache_publish NAME SOURCE_DIR FILE... -- publish a complete cache entry.
+# Entry visibility is atomic; flat output restore is rollback-oriented, not atomic.
 cache_publish() {
   _cp_name=$1; _cp_src=$2; shift 2
   is_dry && return 0
@@ -367,6 +422,7 @@ cache_publish() {
   for _cp_file in "$@"; do cache_valid_name "$_cp_file" || return 1; done
   _cp_parent=$ARTIFACTS/$_cp_name
   mkdir -p "$_cp_parent" || return 1
+  _cp_lock=$_cp_parent/.$CACHE_KEY.lock
   _cp_n=$$
   _cp_tmp=$_cp_parent/.$CACHE_KEY.$_cp_n
   while [ -e "$_cp_tmp" ] || [ -L "$_cp_tmp" ]; do _cp_n=$((_cp_n + 1)); _cp_tmp=$_cp_parent/.$CACHE_KEY.$_cp_n; done
@@ -384,16 +440,26 @@ cache_publish() {
   done
   printf '%s' "$CACHE_ID" > "$_cp_tmp/identity" || { rm -rf "$_cp_tmp"; return 1; }
   : > "$_cp_tmp/complete" || { rm -rf "$_cp_tmp"; return 1; }
-  if cache_entry_valid "$CACHE_DIR" "$CACHE_ID" "$@"; then
+  cache_entry_valid "$_cp_tmp" "$CACHE_ID" "$@" || { rm -rf "$_cp_tmp"; return 1; }
+  if ! mkdir "$_cp_lock" 2>/dev/null; then
     rm -rf "$_cp_tmp"
+    warn "cache publisher lock exists; skipping publication: $_cp_lock"
     return 0
   fi
   if [ -e "$CACHE_DIR" ] || [ -L "$CACHE_DIR" ]; then
-    rm -rf "$_cp_tmp"
-    warn "refusing to replace existing cache key with a different identity: $CACHE_DIR"
+    if cache_entry_valid "$CACHE_DIR" "$CACHE_ID" "$@"; then
+      rm -rf "$_cp_tmp" "$_cp_lock"
+      return 0
+    fi
+    rm -rf "$_cp_tmp" "$_cp_lock"
+    warn "refusing to replace existing invalid cache key: $CACHE_DIR"
     return 1
   fi
-  mv "$_cp_tmp" "$CACHE_DIR" || { rm -rf "$_cp_tmp"; return 1; }
+  if ! mv "$_cp_tmp" "$CACHE_DIR"; then
+    rm -rf "$_cp_tmp" "$_cp_lock"
+    return 1
+  fi
+  rmdir "$_cp_lock" 2>/dev/null || true
   log "cached: $_cp_name ($CACHE_KEY)"
 }
 

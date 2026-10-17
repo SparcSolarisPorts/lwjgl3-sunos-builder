@@ -311,10 +311,6 @@ comp_shaderc() {
   _src=$WORK/src/shaderc
   prepare shaderc "$SHADERC_URL" "$SHADERC_REF" "$_src" "$PATCHES/shaderc"
   [ -z "${PREPARE_ONLY:-}" ] || { log "shaderc prepared at $_src"; return 0; }
-  if [ -z "${SHADERC_SKIP_SYNC:-}" ]; then
-    ( cd "$_src" 2>/dev/null || is_dry
-      run python3 utils/git-sync-deps )
-  fi
   _shaderc_deps=
   _shaderc_unknown=0
   for _dep in glslang SPIRV-Tools SPIRV-Headers; do
@@ -337,6 +333,23 @@ comp_shaderc() {
   [ "$_shaderc_unknown" -eq 0 ] || CACHE_SAFE=0
   cache_restore shaderc libshaderc.so
   [ "$CACHE_HIT" -eq 1 ] && return 0
+  if [ -z "${SHADERC_SKIP_SYNC:-}" ]; then
+    ( cd "$_src" 2>/dev/null || is_dry
+      run python3 utils/git-sync-deps )
+    # Synced third-party sources are new effective inputs; recompute identity.
+    _shaderc_deps=
+    _shaderc_unknown=0
+    for _dep in glslang SPIRV-Tools SPIRV-Headers; do
+      if [ ! -d "$_src/third_party/$_dep" ]; then _shaderc_unknown=1; _shaderc_deps="$_shaderc_deps;$_dep=missing"; continue; fi
+      _dep_commit=$(git -C "$_src/third_party/$_dep" rev-parse HEAD 2>/dev/null || true)
+      if [ -z "$_dep_commit" ]; then _shaderc_unknown=1; _shaderc_deps="$_shaderc_deps;$_dep=unversioned"; continue; fi
+      _dep_state=$(git -C "$_src/third_party/$_dep" status --porcelain 2>/dev/null || printf unknown)
+      [ -z "$_dep_state" ] || _shaderc_unknown=1
+      _shaderc_deps="$_shaderc_deps;$_dep=$_dep_commit;state=$_dep_state"
+    done
+    cache_identity shaderc "$_src" "$PATCHES/shaderc" "skip_sync=${SHADERC_SKIP_SYNC:-};deps=$_shaderc_deps;shared_linker_flags=$LDFLAGS;args=$SHADERC_CMAKE_ARGS"
+    [ "$_shaderc_unknown" -eq 0 ] || CACHE_SAFE=0
+  fi
   cmake_build shaderc "$_src" \
     -DSHADERC_SKIP_INSTALL=ON -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON \
     -DSHADERC_SKIP_COPYRIGHT_CHECK=ON -DSHADERC_ENABLE_WERROR_COMPILE=OFF \

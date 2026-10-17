@@ -73,6 +73,34 @@ for _bad_elf in class endian machine; do
   if cache_publish "wrong-$_bad_elf" "$TMP/input" wrong.so 2>/dev/null; then fail "$_bad_elf ELF published"; fi
 done
 
+# Identity changes for ignored inputs and tool executable content/path.
+mkdir -p "$TMP/src/.ignored"
+printf 'first ignored payload\n' > "$TMP/src/.ignored/input"
+git -C "$TMP/src" config core.excludesFile /dev/null
+printf '.ignored/\n' > "$TMP/src/.gitignore"
+git -C "$TMP/src" add .gitignore
+# Commit the ignore rule so only its payload is an ignored working input.
+git -C "$TMP/src" commit -qm ignore-rule
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+KEY1=$CACHE_KEY
+printf 'changed ignored payload\n' > "$TMP/src/.ignored/input"
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+[ "$CACHE_KEY" != "$KEY1" ] || fail 'ignored input did not invalidate identity'
+printf 'first ignored payload\n' > "$TMP/src/.ignored/input"
+
+mkdir -p "$TMP/tool-a" "$TMP/tool-b"
+for _tool_dir in "$TMP/tool-a" "$TMP/tool-b"; do
+  printf '#!/bin/sh\nprintf "same version\\n"\n' > "$_tool_dir/cc"
+  chmod +x "$_tool_dir/cc"
+done
+CC="$TMP/tool-a/cc"
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+KEY1=$CACHE_KEY
+CC="$TMP/tool-b/cc"
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
+[ "$CACHE_KEY" != "$KEY1" ] || fail 'tool path did not invalidate identity'
+CC=cc
+
 # Identity changes when recipe flags, patch names/content, or source tree change.
 cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 KEY1=$CACHE_KEY
