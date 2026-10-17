@@ -32,6 +32,27 @@ first_tool() { # first_tool A B C -> prints the first that exists, else the last
 # mirror_repo NAME URL  -- ensure a bare mirror in $CACHE, sets $MIRROR.
 # Each mirror is refreshed at most once per process.
 _MIRRORED=
+
+# create_mirror NAME URL -- initialize and fetch a mirror without `git clone`.
+# Some older Solaris Git releases misparse an absolute clone destination as a
+# protocol name, so initialize the bare repository from inside CACHE instead.
+create_mirror() {
+  _name=$1; _url=$2
+  _mirror_name=$_name-$(printf '%s' "$_url" | tr -c 'A-Za-z0-9' '_').git
+  if is_dry; then
+    printf '+ git init --bare %s/%s\n' "$CACHE" "$_mirror_name" >&2
+    printf '+ git -C %s fetch %s\n' "$CACHE/$_mirror_name" "$_url" >&2
+    return 0
+  fi
+  ( CDPATH= cd "$CACHE" &&
+    mkdir "$_mirror_name" &&
+    CDPATH= cd "$_mirror_name" &&
+    run git init --bare . >/dev/null &&
+    run git remote add origin "$_url" &&
+    run git fetch --prune origin \
+      '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' )
+}
+
 mirror_repo() {
   _key=$(printf '%s' "$2" | tr -c 'A-Za-z0-9' '_')
   MIRROR=$CACHE/$1-$_key.git
@@ -49,7 +70,7 @@ mirror_repo() {
                '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1 ); then
         warn "recreating invalid mirror $MIRROR"
         rm -rf "$MIRROR"
-        ( CDPATH= cd "$CACHE" && run git clone -q --mirror "$2" "$1-$_key.git" ) || return 1
+        create_mirror "$1" "$2" || return 1
       fi
     fi
   else
@@ -60,8 +81,7 @@ mirror_repo() {
     # Clone from inside CACHE with a relative destination. This avoids an
     # old Solaris Git argument parser treating the absolute destination as a
     # protocol name, while MIRROR remains absolute for later operations.
-    _mirror_name=$1-$_key.git
-    ( CDPATH= cd "$CACHE" && run git clone -q --mirror "$2" "$_mirror_name" ) || return 1
+    create_mirror "$1" "$2" || return 1
   fi
   _MIRRORED="$_MIRRORED $MIRROR"
 }
