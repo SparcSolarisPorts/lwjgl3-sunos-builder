@@ -2,6 +2,7 @@
 # lwjgl3-sunos-builder: build SPARC Solaris natives for a Minecraft release.
 #
 #   ./build.sh list
+#   ./build.sh clean
 #   ./build.sh VERSION [glfw|lwjgl3|jemalloc|openal|sdl3|verify ...]
 #   ./build.sh all
 #   ./build.sh check [-v] [--3way] [--offline] [VERSION ...]   dry-run all patch sets
@@ -15,7 +16,7 @@ if [ -x /usr/xpg4/bin/sh ]; then SH=/usr/xpg4/bin/sh; else SH=sh; fi
 
 versions() { grep -v '^#' "$ROOT/versions.conf" | cut -d'|' -f1; }
 usage() {
-  echo "usage: $0 list | check | all | VERSION [component ...]" >&2
+  echo "usage: $0 list | clean | check | all | VERSION [component ...]" >&2
   echo "versions: $(versions | tr '\n' ' ')" >&2
   exit 2
 }
@@ -28,6 +29,11 @@ case "$1" in
     grep -v '^#' "$ROOT/versions.conf" | while IFS='|' read mc lw sdl; do
       printf '%-8s %-7s %s\n' "$mc" "$lw" "$sdl"
     done ;;
+  clean)
+    # Remove generated outputs and cached mirrors. The next check/build will
+    # clone fresh mirrors and fetch all tags, including the pinned refs.
+    rm -rf "$ROOT/bin" "$ROOT/work" "$ROOT/build" "$ROOT/cache"
+    echo "removed bin/, work/, build/, and cache/" ;;
   check)
     shift; exec "$SH" "$ROOT/tools/check-patches.sh" "$@" ;;
   all)

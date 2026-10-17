@@ -19,6 +19,7 @@ tools/                    new-version.sh, check-versions.sh, extract-fork-patche
 ```sh
 export JAVA_HOME=/path/to/sparcv9-jdk     # needs include/jni.h (LWJGL core)
 ./build.sh list
+./build.sh clean                         # remove bin/work/build/cache and refresh sources next run
 ./build.sh 1.20.1                         # libffi glfw lwjgl3 jemalloc openal, then verify
 ./build.sh 26.3                           # libffi lwjgl3 jemalloc openal freetype shaderc spvc sdl3
 ./build.sh 1.20.1 glfw                    # one component
@@ -31,7 +32,10 @@ DRY_RUN=1 ./build.sh 26.3                 # print every command, run nothing
 Output goes to `bin/<mc>/` (flat directory of `.so` files, plus `lwjgl.jar`
 rebuilt with the `SUNOS` platform enum). Sources are cloned from a cached bare
 mirror in `cache/` into `work/<mc>/`, so your own checkouts are never modified.
-Re-running is safe: already-applied patches are detected and skipped.
+Re-running is safe: already-applied patches are detected and skipped. Use
+`./build.sh clean` to remove generated outputs and cached mirrors when you need
+to force fresh source downloads and ref discovery; it does not remove patches
+or release configuration.
 
 Run Minecraft with `-Dorg.lwjgl.librarypath=<bin/mc>` and put the rebuilt
 `lwjgl.jar` ahead of the stock core jar on the classpath.
