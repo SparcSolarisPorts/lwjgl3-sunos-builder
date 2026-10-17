@@ -11,6 +11,15 @@ comp_libffi() {
   _src=$WORK/src/libffi
   prepare libffi "$LIBFFI_URL" "$LIBFFI_REF" "$_src" "$PATCHES/libffi"
   [ -z "${PREPARE_ONLY:-}" ] || { log "libffi prepared at $_src"; return 0; }
+  cache_identity libffi "$_src" "$PATCHES/libffi" "static=on;pic=on;disable-dependency-tracking;CFLAGS=$CFLAGS;LDFLAGS=$LDFLAGS"
+  cache_restore libffi libffi.a
+  if [ "$CACHE_HIT" -eq 1 ]; then
+    LWJGL_SUNOS_LIBFFI_A=$OUT/libffi.a
+    printf '%s\n' "$LWJGL_SUNOS_LIBFFI_A" > "$WORK/libffi.path"
+    export LWJGL_SUNOS_LIBFFI_A
+    log "libffi cache path: $LWJGL_SUNOS_LIBFFI_A"
+    return 0
+  fi
   ( cd "$_src" 2>/dev/null || is_dry
     # git checkouts need the autotools; release tarballs ship configure.
     if is_dry || [ ! -x ./configure ]; then run autoreconf -fi; fi
@@ -19,9 +28,13 @@ comp_libffi() {
       --disable-multi-os-directory --disable-dependency-tracking
     run "$MAKE" -j "$JOBS" )
   if is_dry; then LWJGL_SUNOS_LIBFFI_A=$_src/.libs/libffi.a; else
-    LWJGL_SUNOS_LIBFFI_A=$(find "$_src" -name libffi.a -type f 2>/dev/null | head -1)
-    [ -n "$LWJGL_SUNOS_LIBFFI_A" ] || die "libffi.a not produced under $_src"
+    _libffi_a=$(find "$_src" -name libffi.a -type f 2>/dev/null | head -1)
+    [ -n "$_libffi_a" ] || die "libffi.a not produced under $_src"
+    mkdir -p "$OUT"
+    cp "$_libffi_a" "$OUT/libffi.a"
+    LWJGL_SUNOS_LIBFFI_A=$OUT/libffi.a
     printf '%s\n' "$LWJGL_SUNOS_LIBFFI_A" > "$WORK/libffi.path"
+    cache_publish libffi "$OUT" libffi.a || warn "failed to publish libffi cache entry"
   fi
   export LWJGL_SUNOS_LIBFFI_A
   log "libffi: $LWJGL_SUNOS_LIBFFI_A"
@@ -36,6 +49,9 @@ comp_glfw() {
   _src=$WORK/src/glfw
   prepare glfw "$GLFW_URL" "$GLFW_REF" "$_src" "$PATCHES/glfw"
   [ -z "${PREPARE_ONLY:-}" ] || { log "glfw prepared at $_src"; return 0; }
+  cache_identity glfw "$_src" "$PATCHES/glfw" "GLFW_X11_WAYLAND_OFF;GLFW_BUILD_X11=ON;CMAKE_SHARED_LINKER_FLAGS=$LDFLAGS;GLFW_CMAKE_ARGS=${GLFW_CMAKE_ARGS:-}"
+  cache_restore glfw libglfw.so
+  [ "$CACHE_HIT" -eq 1 ] && return 0
   # GLFW_BUILD_WAYLAND (>=3.4) and GLFW_USE_WAYLAND (3.3.x) are both forced
   # off; Wayland does not exist on Solaris.
   cmake_build glfw "$_src" \
@@ -43,8 +59,10 @@ comp_glfw() {
     -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF \
     -DGLFW_BUILD_WAYLAND=OFF -DGLFW_USE_WAYLAND=OFF \
     -DGLFW_BUILD_X11=ON \
-    -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS"
+    -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
+    $GLFW_CMAKE_ARGS
   stage_lib "$BUILD_DIR" 'libglfw.so*' libglfw.so
+  cache_publish glfw "$OUT" libglfw.so || warn "failed to publish GLFW cache entry"
 }
 
 # ------------------------------------------------------------------ LWJGL
@@ -61,6 +79,25 @@ comp_lwjgl3() {
   [ -z "${PREPARE_ONLY:-}" ] || { log "lwjgl3 prepared at $_src"; return 0; }
 
   lwjgl_preflight "$_src"
+  _lwjgl_outputs=
+  for _n in $NATIVES; do
+    case "$_n" in liblwjgl*.so) _lwjgl_outputs="$_lwjgl_outputs $_n" ;; esac
+  done
+  [ -n "$_lwjgl_outputs" ] || die "NATIVES contains no LWJGL shared libraries for $MC_VERSION"
+  [ -f "$LWJGL_SUNOS_LIBFFI_A" ] || die "LWJGL libffi archive is missing: $LWJGL_SUNOS_LIBFFI_A"
+  _ffi_identity=$(cksum "$LWJGL_SUNOS_LIBFFI_A" 2>/dev/null | awk '{print $1 ":" $2}') || die "cannot identify libffi archive"
+  _java_version=$($JAVA_HOME/bin/java -version 2>&1 | head -1 || printf unknown)
+  _ant_version=$(ant -version 2>&1 | head -1 || printf unknown)
+  cache_identity lwjgl3 "$_src" "$PATCHES/lwjgl3" "targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native};args=$LWJGL_ANT_ARGS;static_runtime=$LWJGL_SUNOS_STATIC_RUNTIME;ffi=$_ffi_identity;java=$JAVA_HOME:$_java_version;ant=$_ant_version;outputs=$_lwjgl_outputs"
+  cache_restore lwjgl3 $_lwjgl_outputs lwjgl.jar
+  [ "$CACHE_HIT" -eq 1 ] && return 0
+
+  # Never let stale output files satisfy the complete-group check after a
+  # failed or partial Ant invocation.
+  if ! is_dry; then
+    rm -f "$OUT/lwjgl.jar"
+    for _n in $_lwjgl_outputs; do rm -f "$OUT/$_n"; done
+  fi
 
   # LWJGL keeps template compilation separate from generation.  Generate first
   # fails unless compile-templates has already run; override if needed for a
@@ -68,11 +105,16 @@ comp_lwjgl3() {
   _targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native}
   # -k: keep going so one failing optional binding does not hide the ones
   # Minecraft needs; verify_natives is the real pass/fail gate.
-  ( cd "$_src" 2>/dev/null || is_dry
-    run env CC="$CC" CXX="$CXX" CFLAGS="$ARCH_FLAGS $CFLAGS" \
-      CXXFLAGS="$ARCH_FLAGS $CXXFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
-      LWJGL_SUNOS_STATIC_RUNTIME="$LWJGL_SUNOS_STATIC_RUNTIME" \
-      ant -k $LWJGL_ANT_ARGS $_targets ) || warn "ant reported errors; checking what was produced"
+  if ( cd "$_src" 2>/dev/null || is_dry
+       run env CC="$CC" CXX="$CXX" CFLAGS="$ARCH_FLAGS $CFLAGS" \
+         CXXFLAGS="$ARCH_FLAGS $CXXFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
+         LWJGL_SUNOS_STATIC_RUNTIME="$LWJGL_SUNOS_STATIC_RUNTIME" \
+         ant -k $LWJGL_ANT_ARGS $_targets ); then
+    _ant_ok=1
+  else
+    _ant_ok=0
+    warn "ant reported errors; checking what was produced"
+  fi
 
   for _n in $NATIVES; do
     case "$_n" in
@@ -80,6 +122,19 @@ comp_lwjgl3() {
     esac
   done
   lwjgl_core_jar "$_src"
+  if [ "$_ant_ok" -eq 1 ] && [ -f "$OUT/lwjgl.jar" ]; then
+    _lwjgl_complete=1
+    for _n in $_lwjgl_outputs; do
+      if [ ! -f "$OUT/$_n" ] || ! elf_check "$OUT/$_n"; then _lwjgl_complete=0; fi
+    done
+    if [ "$_lwjgl_complete" -eq 1 ]; then
+      cache_publish lwjgl3 "$OUT" $_lwjgl_outputs lwjgl.jar || warn "failed to publish LWJGL cache entry"
+    else
+      warn "LWJGL outputs incomplete or invalid; not caching the component"
+    fi
+  else
+    warn "LWJGL Ant failed; not caching potentially partial outputs"
+  fi
 }
 
 # lwjgl_preflight SRC -- fail in seconds, not after an hour of compiling.
@@ -145,6 +200,9 @@ comp_jemalloc() {
   _src=$WORK/src/jemalloc
   prepare jemalloc "$JEMALLOC_URL" "$JEMALLOC_REF" "$_src" "$PATCHES/jemalloc"
   [ -z "${PREPARE_ONLY:-}" ] || { log "jemalloc prepared at $_src"; return 0; }
+  cache_identity jemalloc "$_src" "$PATCHES/jemalloc" "prefix=je_;initial-exec-tls=off;background-thread=off;CFLAGS=$CFLAGS;LDFLAGS=$LDFLAGS"
+  cache_restore jemalloc libjemalloc.so
+  [ "$CACHE_HIT" -eq 1 ] && return 0
   ( cd "$_src" 2>/dev/null || is_dry
     # git checkouts ship configure.ac only; release tarballs ship configure.
     if is_dry || [ ! -x ./configure ]; then run autoconf; fi
@@ -163,6 +221,7 @@ comp_jemalloc() {
     fi
     run "$MAKE" -j "$JOBS" build_lib_shared )
   stage_lib "$_src/lib" 'libjemalloc.so*' libjemalloc.so
+  cache_publish jemalloc "$OUT" libjemalloc.so || warn "failed to publish jemalloc cache entry"
 }
 
 # -------------------------------------------------------------- OpenAL Soft
@@ -174,6 +233,9 @@ comp_openal() {
   # Use the shared GCC runtime by default; static libgcc/libstdc++ is an
   # opt-in for hosts that provide matching SPARC64 archives. Backend list can
   # be overridden via OPENAL_CMAKE_ARGS (e.g. enable PulseAudio when installed).
+  cache_identity openal "$_src" "$PATCHES/openal" "LIBTYPE=SHARED;ALSOFT_UTILS=OFF;ALSOFT_EXAMPLES=OFF;ALSOFT_TESTS=OFF;ALSOFT_INSTALL=OFF;SOLARIS=ON;OSS=ON;runtime=$LWJGL_SUNOS_STATIC_RUNTIME;args=$OPENAL_CMAKE_ARGS"
+  cache_restore openal libopenal.so
+  [ "$CACHE_HIT" -eq 1 ] && return 0
   _openal_runtime_flags=$LDFLAGS
   case "$LWJGL_SUNOS_STATIC_RUNTIME" in
     1|true|TRUE|yes|YES) _openal_runtime_flags="-static-libgcc -static-libstdc++ $LDFLAGS" ;;
@@ -189,6 +251,7 @@ comp_openal() {
     -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,gnu-version-script-compat $_openal_runtime_flags" \
     $OPENAL_CMAKE_ARGS
   stage_lib "$BUILD_DIR" 'libopenal.so*' libopenal.so
+  cache_publish openal "$OUT" libopenal.so || warn "failed to publish OpenAL cache entry"
 }
 
 # --------------------------------------------------------------------- SDL3
@@ -199,6 +262,9 @@ comp_sdl3() {
   _src=$WORK/src/sdl3
   prepare sdl3 "$SDL3_URL" "$SDL3_REF" "$_src" "$PATCHES/sdl3"
   [ -z "${PREPARE_ONLY:-}" ] || { log "sdl3 prepared at $_src"; return 0; }
+  cache_identity sdl3 "$_src" "$PATCHES/sdl3" "SDL_SHARED=ON;SDL_STATIC=OFF;SDL_X11=ON;SDL_WAYLAND=OFF;SDL_VULKAN=ON;DBUS=OFF;CMAKE_SHARED_LINKER_FLAGS=$LDFLAGS;args=$SDL3_CMAKE_ARGS"
+  cache_restore sdl3 libSDL3.so
+  [ "$CACHE_HIT" -eq 1 ] && return 0
   cmake_build sdl3 "$_src" \
     -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
     -DSDL_INSTALL=OFF -DSDL_X11=ON -DSDL_WAYLAND=OFF -DSDL_VULKAN=ON \
@@ -206,6 +272,7 @@ comp_sdl3() {
     -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
     $SDL3_CMAKE_ARGS
   stage_lib "$BUILD_DIR" 'libSDL3.so*' libSDL3.so
+  cache_publish sdl3 "$OUT" libSDL3.so || warn "failed to publish SDL3 cache entry"
 }
 
 # --------------------------------------------------------------- FreeType
@@ -217,6 +284,9 @@ comp_freetype() {
   _src=$WORK/src/freetype
   prepare freetype "$FREETYPE_URL" "$FREETYPE_REF" "$_src" "$PATCHES/freetype"
   [ -z "${PREPARE_ONLY:-}" ] || { log "freetype prepared at $_src"; return 0; }
+  cache_identity freetype "$_src" "$PATCHES/freetype" "FT_DISABLE_ZLIB=ON;FT_DISABLE_BZIP2=ON;FT_DISABLE_PNG=ON;FT_DISABLE_HARFBUZZ=ON;FT_DISABLE_BROTLI=ON;FT_CONFIG_OPTION_ERROR_STRINGS;CFLAGS=$ARCH_FLAGS $CFLAGS;LDFLAGS=$LDFLAGS"
+  cache_restore freetype libfreetype.so
+  [ "$CACHE_HIT" -eq 1 ] && return 0
   cmake_build freetype "$_src" \
     -DBUILD_SHARED_LIBS=ON \
     -DFT_DISABLE_ZLIB=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON \
@@ -224,6 +294,7 @@ comp_freetype() {
     -DCMAKE_C_FLAGS="$ARCH_FLAGS $CFLAGS -DFT_CONFIG_OPTION_ERROR_STRINGS" \
     -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS"
   stage_lib "$BUILD_DIR" 'libfreetype.so*' libfreetype.so
+  cache_publish freetype "$OUT" libfreetype.so || warn "failed to publish FreeType cache entry"
 }
 
 # ---------------------------------------------------------------- Shaderc
@@ -242,12 +313,33 @@ comp_shaderc() {
     ( cd "$_src" 2>/dev/null || is_dry
       run python3 utils/git-sync-deps )
   fi
+  _shaderc_deps=
+  _shaderc_unknown=0
+  for _dep in glslang SPIRV-Tools SPIRV-Headers; do
+    if [ ! -d "$_src/third_party/$_dep" ]; then
+      _shaderc_deps="$_shaderc_deps;$_dep=missing"
+      _shaderc_unknown=1
+      continue
+    fi
+    _dep_commit=$(git -C "$_src/third_party/$_dep" rev-parse HEAD 2>/dev/null || true)
+    if [ -n "$_dep_commit" ]; then
+      _shaderc_deps="$_shaderc_deps;$_dep=$_dep_commit"
+    else
+      _shaderc_deps="$_shaderc_deps;$_dep=unversioned"
+      _shaderc_unknown=1
+    fi
+  done
+  cache_identity shaderc "$_src" "$PATCHES/shaderc" "skip_sync=${SHADERC_SKIP_SYNC:-};deps=$_shaderc_deps;shared_linker_flags=$LDFLAGS;args=$SHADERC_CMAKE_ARGS"
+  [ "$_shaderc_unknown" -eq 0 ] || CACHE_SAFE=0
+  cache_restore shaderc libshaderc.so
+  [ "$CACHE_HIT" -eq 1 ] && return 0
   cmake_build shaderc "$_src" \
     -DSHADERC_SKIP_INSTALL=ON -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON \
     -DSHADERC_SKIP_COPYRIGHT_CHECK=ON -DSHADERC_ENABLE_WERROR_COMPILE=OFF \
     -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
     $SHADERC_CMAKE_ARGS
   stage_lib "$BUILD_DIR" 'libshaderc_shared.so*' libshaderc.so
+  cache_publish shaderc "$OUT" libshaderc.so || warn "failed to publish Shaderc cache entry"
 }
 
 # ------------------------------------------------------------ SPIRV-Cross
@@ -259,6 +351,9 @@ comp_spvc() {
   _src=$WORK/src/spvc
   prepare spvc "$SPVC_URL" "$SPVC_REF" "$_src" "$PATCHES/spvc"
   [ -z "${PREPARE_ONLY:-}" ] || { log "spvc prepared at $_src"; return 0; }
+  cache_identity spvc "$_src" "$PATCHES/spvc" "STATIC=OFF;SHARED=ON;CLI=OFF;FORCE_PIC=ON;shared_linker_flags=$LDFLAGS;args=$SPVC_CMAKE_ARGS"
+  cache_restore spvc libspirv-cross.so
+  [ "$CACHE_HIT" -eq 1 ] && return 0
   cmake_build spvc "$_src" \
     -DSPIRV_CROSS_STATIC=OFF -DSPIRV_CROSS_SHARED=ON -DSPIRV_CROSS_CLI=OFF \
     -DSPIRV_CROSS_ENABLE_TESTS=OFF -DSPIRV_CROSS_SKIP_INSTALL=ON \
@@ -266,4 +361,5 @@ comp_spvc() {
     -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
     $SPVC_CMAKE_ARGS
   stage_lib "$BUILD_DIR" 'libspirv-cross-c-shared.so*' libspirv-cross.so
+  cache_publish spvc "$OUT" libspirv-cross.so || warn "failed to publish SPIRV-Cross cache entry"
 }

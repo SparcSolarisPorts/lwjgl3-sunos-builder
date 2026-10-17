@@ -10,6 +10,7 @@ mc_main() {
 
   PATCHES=$MCDIR/patches
   CACHE=${CACHE:-$ROOT/cache}
+  ARTIFACTS=${ARTIFACTS:-$ROOT/build/artifacts}
   WORK=${WORK:-$ROOT/work/$MC_VERSION}
   OUT=${OUT:-$ROOT/bin/$MC_VERSION}
 
@@ -39,7 +40,7 @@ mc_main() {
 
   if [ "$#" -eq 0 ]; then set -- $COMPONENTS verify; fi
   log "Minecraft $MC_VERSION  (LWJGL $LWJGL_VERSION)  ->  $OUT"
-  mkdir -p "$OUT" "$WORK"
+  is_dry || mkdir -p "$OUT" "$WORK"
   for _c in "$@"; do
     case "$_c" in
       libffi)   comp_libffi ;;

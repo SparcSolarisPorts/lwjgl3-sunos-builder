@@ -32,12 +32,9 @@ DRY_RUN=1 ./build.sh 26.3                 # print every command, run nothing
 Output goes to `bin/<mc>/` (flat directory of `.so` files, plus `lwjgl.jar`
 rebuilt with the `SUNOS` platform enum). Sources are cloned from a cached bare
 mirror in `cache/` into `work/<mc>/`, so your own checkouts are never modified.
-Re-running is safe: already-applied patches are detected and skipped. Use
-`./build.sh clean` to remove generated outputs and cached mirrors when you need
-to force fresh source downloads and ref discovery; it does not remove patches
-or release configuration. On Solaris, the builder clones each new mirror from
-inside `cache/` to avoid an old Git argument-parsing issue with absolute mirror
-paths.
+Re-running is safe: already-applied patches are detected and skipped. Successfully built components are also cached under `build/artifacts/` and may be reused by another release when the resolved source, ordered patches, build recipe, target flags, toolchain, and dependencies match. Each release still receives its own copied files in `bin/<mc>/`; later component failures do not discard earlier completed artifacts. Shaderc dependencies and LWJGL's JDK/Ant/libffi inputs are part of the corresponding cache identity. Set `ARTIFACTS=/path/to/cache` to use another artifact-cache directory. Use `./build.sh clean` to remove generated outputs, reusable artifacts, work trees, and cached source mirrors; this forces fresh builds and source downloads. It does not remove patches or release configuration. On Solaris, the builder clones each new mirror from inside `cache/` to avoid an old Git argument-parsing issue with absolute mirror paths.
+
+Run the portable synthetic cache checks with `sh tests/cache.sh`. They validate cache metadata and fabricated ELF headers, not native compiler output. The historical 26.3 `WRONG-ELF` report has no measured header values, so its cause remains unconfirmed; actual SPARCV9 ELF inspection and a full build still require a Solaris SPARC host.
 
 Run Minecraft with `-Dorg.lwjgl.librarypath=<bin/mc>` and put the rebuilt
 `lwjgl.jar` ahead of the stock core jar on the classpath.
