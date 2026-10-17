@@ -69,7 +69,9 @@ comp_lwjgl3() {
   # -k: keep going so one failing optional binding does not hide the ones
   # Minecraft needs; verify_natives is the real pass/fail gate.
   ( cd "$_src" 2>/dev/null || is_dry
-    run env CC="$CC" CFLAGS="$ARCH_FLAGS $CFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
+    run env CC="$CC" CXX="$CXX" CFLAGS="$ARCH_FLAGS $CFLAGS" \
+      CXXFLAGS="$ARCH_FLAGS $CXXFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
+      LWJGL_SUNOS_STATIC_RUNTIME="$LWJGL_SUNOS_STATIC_RUNTIME" \
       ant -k $LWJGL_ANT_ARGS $_targets ) || warn "ant reported errors; checking what was produced"
 
   for _n in $NATIVES; do
@@ -158,9 +160,13 @@ comp_openal() {
   _src=$WORK/src/openal
   prepare openal "$OPENAL_URL" "$OPENAL_REF" "$_src" "$PATCHES/openal"
   [ -z "${PREPARE_ONLY:-}" ] || { log "openal prepared at $_src"; return 0; }
-  # Static libgcc/libstdc++ so the .so does not drag a GCC runtime path into
-  # the JVM's library search.  Backend list can be overridden via
-  # OPENAL_CMAKE_ARGS (e.g. enable PulseAudio when installed).
+  # Use the shared GCC runtime by default; static libgcc/libstdc++ is an
+  # opt-in for hosts that provide matching SPARC64 archives. Backend list can
+  # be overridden via OPENAL_CMAKE_ARGS (e.g. enable PulseAudio when installed).
+  _openal_runtime_flags=$LDFLAGS
+  case "$LWJGL_SUNOS_STATIC_RUNTIME" in
+    1|true|TRUE|yes|YES) _openal_runtime_flags="-static-libgcc -static-libstdc++ $LDFLAGS" ;;
+  esac
   cmake_build openal "$_src" \
     -DLIBTYPE=SHARED \
     -DALSOFT_UTILS=OFF -DALSOFT_EXAMPLES=OFF -DALSOFT_TESTS=OFF \
@@ -168,7 +174,7 @@ comp_openal() {
     -DALSOFT_BACKEND_SOLARIS=ON -DALSOFT_BACKEND_OSS=ON \
     -DALSOFT_BACKEND_ALSA=OFF -DALSOFT_BACKEND_PORTAUDIO=OFF \
     -DALSOFT_BACKEND_PULSEAUDIO=OFF -DALSOFT_BACKEND_SNDIO=OFF \
-    -DCMAKE_SHARED_LINKER_FLAGS="-static-libgcc -static-libstdc++ $LDFLAGS" \
+    -DCMAKE_SHARED_LINKER_FLAGS="$_openal_runtime_flags" \
     $OPENAL_CMAKE_ARGS
   stage_lib "$BUILD_DIR" 'libopenal.so*' libopenal.so
 }

@@ -174,7 +174,7 @@ index 000000000..34c53af8f
 +            </condition>
 +
 +            <local name="static.runtime"/>
-+            <condition property="static.runtime" value="true"><not><equals arg1="@{lang}" arg2="c"/></not></condition>
++            <condition property="static.runtime" value="true"><and><not><equals arg1="@{lang}" arg2="c"/></not><matches string="${env.LWJGL_SUNOS_STATIC_RUNTIME}" pattern="(?i)^(1|true|yes)$"/></and></condition>
 +
 +            <echo message="Linking ${name}" taskname="${cc}"/>
 +            <mkdir dir="${lib.arch}"/>
