@@ -158,7 +158,7 @@ comp_jemalloc() {
     if is_dry; then :; else
       _defs=include/jemalloc/internal/jemalloc_internal_defs.h
       [ -f "$_defs" ] || die "jemalloc config header not produced: $_src/$_defs"
-      sed 's/^#define JEMALLOC_BACKGROUND_THREAD.*/\\/\\* #undef JEMALLOC_BACKGROUND_THREAD \\*\\//' \
+      sed 's/^#define JEMALLOC_BACKGROUND_THREAD.*/#undef JEMALLOC_BACKGROUND_THREAD/' \
         "$_defs" > "$_defs.tmp" && mv "$_defs.tmp" "$_defs"
     fi
     run "$MAKE" -j "$JOBS" build_lib_shared )
