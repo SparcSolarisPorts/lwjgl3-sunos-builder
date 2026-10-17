@@ -38,7 +38,7 @@ _MIRRORED=
 # protocol name, so initialize the bare repository from inside CACHE instead.
 create_mirror() {
   _name=$1; _url=$2
-  _mirror_name=$_name-$(printf '%s' "$_url" | tr -c 'A-Za-z0-9' '_').git
+  _mirror_name=$_name-$(printf '%s' "$_url" | sed 's/[^A-Za-z0-9]/_/g').git
   if is_dry; then
     printf '+ git init --bare %s/%s\n' "$CACHE" "$_mirror_name" >&2
     printf '+ git -C %s fetch %s\n' "$CACHE/$_mirror_name" "$_url" >&2
@@ -54,7 +54,7 @@ create_mirror() {
 }
 
 mirror_repo() {
-  _key=$(printf '%s' "$2" | tr -c 'A-Za-z0-9' '_')
+  _key=$(printf '%s' "$2" | sed 's/[^A-Za-z0-9]/_/g')
   MIRROR=$CACHE/$1-$_key.git
   mkdir -p "$CACHE"
   case " $_MIRRORED " in *" $MIRROR "*) return 0 ;; esac
