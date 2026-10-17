@@ -133,6 +133,8 @@ warns if the patched LWJGL tree contains no SunOS handling at all.
 
 For newer SPARC/Solaris JDK builds, see the
 [SparcSolarisPorts OpenJDK downloads and build information](https://asbestosstar.egoism.jp/sparcsolarisports/openjdk).
+For Vulkan setup on SPARC Solaris, also see the
+[SparcSolarisPorts Vulkan guide](https://github.com/SparcSolarisPorts/vulkan).
 Choose a JDK that matches the Minecraft version and LWJGL requirements; it must
 provide a working SPARCV9 `javac`, `java`, and JNI headers, including
 `$JAVA_HOME/include/jni.h`.

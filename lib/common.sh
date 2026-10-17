@@ -40,7 +40,11 @@ mirror_repo() {
   if [ -d "$MIRROR" ]; then
     if [ -z "${OFFLINE:-}" ]; then
       log "updating mirror $1 ($2)"
-      run git -C "$MIRROR" remote update --prune >/dev/null 2>&1 || return 1
+      # Some Git versions do not refresh tags through `remote update` when a
+      # mirror was created with an incomplete fetch configuration.  Fetch the
+      # two ref namespaces explicitly so pinned tags are always discoverable.
+      run git -C "$MIRROR" fetch --prune origin \
+        '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1 || return 1
     fi
   else
     if [ -n "${OFFLINE:-}" ] && ! is_dry; then

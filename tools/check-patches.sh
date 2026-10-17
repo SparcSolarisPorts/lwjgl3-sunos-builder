@@ -55,11 +55,33 @@ comp_var() { case "$1" in lwjgl3) echo LWJGL ;; *) upper "$1" ;; esac; }
 # release instead of trying to resolve refs for components that are not built.
 component_active() {
   _env=$1; _want=$2
-  _components=$(sh -c '. "$1"; printf "%s" "$COMPONENTS"' sh "$_env")
+  _components=$(sh -c '. "$1"; printf "%s" "${COMPONENTS-}"' sh "$_env")
   for _c in $_components; do
     [ "$_c" = "$_want" ] && return 0
   done
   return 1
+}
+
+# component_metadata ENV COMPONENT -> URL and ref, one per line.  Keep the
+# variable mapping explicit: Solaris /usr/xpg4/bin/sh has no POSIX indirect
+# parameter expansion, and the old eval-based lookup could return empty values
+# for valid component variables on that shell.
+component_metadata() {
+  _env=$1; _comp=$2
+  (
+    . "$_env"
+    case "$_comp" in
+      lwjgl3)  printf '%s\n%s\n' "${LWJGL_URL-}"  "${LWJGL_REF-}" ;;
+      glfw)    printf '%s\n%s\n' "${GLFW_URL-}"   "${GLFW_REF-}" ;;
+      sdl3)    printf '%s\n%s\n' "${SDL3_URL-}"   "${SDL3_REF-}" ;;
+      libffi)  printf '%s\n%s\n' "${LIBFFI_URL-}" "${LIBFFI_REF-}" ;;
+      jemalloc) printf '%s\n%s\n' "${JEMALLOC_URL-}" "${JEMALLOC_REF-}" ;;
+      openal)  printf '%s\n%s\n' "${OPENAL_URL-}" "${OPENAL_REF-}" ;;
+      freetype) printf '%s\n%s\n' "${FREETYPE_URL-}" "${FREETYPE_REF-}" ;;
+      shaderc) printf '%s\n%s\n' "${SHADERC_URL-}" "${SHADERC_REF-}" ;;
+      spvc)    printf '%s\n%s\n' "${SPVC_URL-}"    "${SPVC_REF-}" ;;
+    esac
+  )
 }
 
 # _check MIRROR COMMIT PATCHDIR OUTPREFIX -- runs in a subshell so the GIT_*
@@ -107,8 +129,9 @@ for mc in $MCS; do
     pd=$ROOT/mc/$mc/patches/$comp
     n=$(ls "$pd"/*.patch 2>/dev/null | wc -l | tr -d ' ')
     if [ "$n" -eq 0 ]; then echo "-" > "$TMP/st.$mc.$comp"; continue; fi
-    v=$(comp_var "$comp")
-    url=$(sh -c ". '$envf'; eval echo \"\\\$${v}_URL\""); ref=$(sh -c ". '$envf'; eval echo \"\\\$${v}_REF\"")
+    metadata=$(component_metadata "$envf" "$comp")
+    url=$(printf '%s\n' "$metadata" | sed -n '1p')
+    ref=$(printf '%s\n' "$metadata" | sed -n '2p')
     if [ -z "$url" ] || [ -z "$ref" ]; then echo "NOREF" > "$TMP/st.$mc.$comp"; continue; fi
     if ! mirror_repo "$comp" "$url" 2>/dev/null; then
       echo "NOFETCH" > "$TMP/st.$mc.$comp"
