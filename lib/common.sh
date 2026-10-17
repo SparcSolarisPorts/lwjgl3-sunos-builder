@@ -40,11 +40,17 @@ mirror_repo() {
   if [ -d "$MIRROR" ]; then
     if [ -z "${OFFLINE:-}" ]; then
       log "updating mirror $1 ($2)"
-      # Some Git versions do not refresh tags through `remote update` when a
-      # mirror was created with an incomplete fetch configuration.  Fetch the
-      # two ref namespaces explicitly so pinned tags are always discoverable.
-      run git -C "$MIRROR" fetch --prune origin \
-        '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1 || return 1
+      # Keep the remote URL correct when recovering a mirror created by an
+      # older Solaris Git. Run Git from inside the mirror: some Solaris Git
+      # builds misparse absolute -C paths as protocol names.
+      if ! ( CDPATH= cd "$MIRROR" &&
+             git remote set-url origin "$2" >/dev/null 2>&1 &&
+             git fetch --prune origin \
+               '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1 ); then
+        warn "recreating invalid mirror $MIRROR"
+        rm -rf "$MIRROR"
+        ( CDPATH= cd "$CACHE" && run git clone -q --mirror "$2" "$1-$_key.git" ) || return 1
+      fi
     fi
   else
     if [ -n "${OFFLINE:-}" ] && ! is_dry; then
