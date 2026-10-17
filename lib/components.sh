@@ -148,9 +148,13 @@ comp_jemalloc() {
   ( cd "$_src" 2>/dev/null || is_dry
     # git checkouts ship configure.ac only; release tarballs ship configure.
     if is_dry || [ ! -x ./configure ]; then run autoconf; fi
+    # jemalloc 5.3.0 has no --disable-background-thread option.  Pretend the
+    # Darwin unfair-lock probe succeeded so its optional background thread is
+    # not enabled; otherwise Solaris reaches pthread_setaffinity_np/cpuset_t,
+    # which it does not provide.
     run env CC="$CC" CFLAGS="$ARCH_FLAGS -fPIC $CFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
-      ./configure --with-jemalloc-prefix=je_ --disable-initial-exec-tls \
-      --disable-background-thread --disable-cxx
+      je_cv_os_unfair_lock=yes \
+      ./configure --with-jemalloc-prefix=je_ --disable-initial-exec-tls --disable-cxx
     run "$MAKE" -j "$JOBS" build_lib_shared )
   stage_lib "$_src/lib" 'libjemalloc.so*' libjemalloc.so
 }
