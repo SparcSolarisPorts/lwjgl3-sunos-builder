@@ -16,7 +16,7 @@ comp_libffi() {
     if is_dry || [ ! -x ./configure ]; then run autoreconf -fi; fi
     run env CC="$CC" CFLAGS="$ARCH_FLAGS -fPIC -O2 $CFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
       ./configure --disable-shared --enable-static --with-pic --disable-docs \
-      --disable-multi-os-directory
+      --disable-multi-os-directory --disable-dependency-tracking
     run "$MAKE" -j "$JOBS" )
   if is_dry; then LWJGL_SUNOS_LIBFFI_A=$_src/.libs/libffi.a; else
     LWJGL_SUNOS_LIBFFI_A=$(find "$_src" -name libffi.a -type f 2>/dev/null | head -1)

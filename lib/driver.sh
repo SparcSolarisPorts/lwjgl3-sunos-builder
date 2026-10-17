@@ -15,7 +15,8 @@ mc_main() {
 
   CC=${CC:-gcc}; CXX=${CXX:-g++}
   CMAKE=${CMAKE:-cmake}
-  MAKE=${MAKE:-$(first_tool gmake make)}
+  # Solaris builds require GNU make; do not silently fall back to /usr/bin/make.
+  MAKE=${MAKE:-gmake}
   PATCH_CMD=${PATCH_CMD:-$(first_tool gpatch patch)}
   ARCH_FLAGS=${ARCH_FLAGS--m64}
   CFLAGS=${CFLAGS-}; CXXFLAGS=${CXXFLAGS-}; LDFLAGS=${LDFLAGS-}
