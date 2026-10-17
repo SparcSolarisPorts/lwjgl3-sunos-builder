@@ -149,7 +149,8 @@ comp_jemalloc() {
     # git checkouts ship configure.ac only; release tarballs ship configure.
     if is_dry || [ ! -x ./configure ]; then run autoconf; fi
     run env CC="$CC" CFLAGS="$ARCH_FLAGS -fPIC $CFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
-      ./configure --with-jemalloc-prefix=je_ --disable-initial-exec-tls --disable-cxx
+      ./configure --with-jemalloc-prefix=je_ --disable-initial-exec-tls \
+      --disable-background-thread --disable-cxx
     run "$MAKE" -j "$JOBS" build_lib_shared )
   stage_lib "$_src/lib" 'libjemalloc.so*' libjemalloc.so
 }

@@ -57,7 +57,7 @@ The set per release matches what Mojang's version JSONs ship for Linux
 | `liblwjgl_vma.so` | LWJGL tag | 26.2+ |
 | `libffi.a` (static, internal) | libffi `v3.8.0` | `LWJGL_SUNOS_LIBFFI_A` points at it; LWJGL 3.3+ binds libffi, 3.1.x/3.2.x bind dyncall, which the patch replaces by a small shim (`core/src/main/c/sunos/dyncall_ffi.c`) over the same static libffi |
 | `libglfw.so` | glfw/glfw `3.5.1` + the glfw patch | 1.13 - 26.2 (X11 only, Wayland off); not shipped from 26.3 |
-| `libjemalloc.so` | jemalloc 5.3.0 | all; `--with-jemalloc-prefix=je_ --disable-initial-exec-tls` |
+| `libjemalloc.so` | jemalloc 5.3.0 | all; `--with-jemalloc-prefix=je_ --disable-initial-exec-tls --disable-background-thread` (Solaris lacks the Linux CPU-affinity API) |
 | `libopenal.so` | OpenAL Soft 1.23.1 | all; Solaris + OSS backends, dynamic GCC C++ runtime by default |
 | `libfreetype.so` | FreeType `VER-2-13-2` (1.21), `VER-2-14-1` (26.1/26.2), `VER-2-14-3` (26.3+) | 1.21 and newer (LWJGL >= 3.3.3) |
 | `libshaderc.so`, `libspirv-cross.so` | LWJGL-CI/shaderc, LWJGL-CI/SPIRV-Cross, tag `LWJGL-3.4.3` | 26.2+ |
