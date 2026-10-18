@@ -90,7 +90,7 @@ comp_lwjgl3() {
   fi
   _java_version=$($JAVA_HOME/bin/java -version 2>&1 | head -1 || printf unknown)
   _ant_version=$(ant -version 2>&1 | head -1 || printf unknown)
-  cache_identity lwjgl3 "$_src" "$PATCHES/lwjgl3" "targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native};args=$LWJGL_ANT_ARGS;static_runtime=$LWJGL_SUNOS_STATIC_RUNTIME;ffi=$_ffi_identity;java=$JAVA_HOME:$_java_version;ant=$_ant_version;outputs=$_lwjgl_outputs"
+  cache_identity lwjgl3 "$_src" "$PATCHES/lwjgl3" "targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native};args=$LWJGL_ANT_ARGS;static_runtime=$LWJGL_SUNOS_STATIC_RUNTIME;ffi=$_ffi_identity;java=$JAVA_HOME:$_java_version;ant=$_ant_version;vulkan_class_override=1;outputs=$_lwjgl_outputs"
   cache_restore lwjgl3 $_lwjgl_outputs lwjgl.jar
   [ "$CACHE_HIT" -eq 1 ] && return 0
 
@@ -191,6 +191,15 @@ lwjgl_core_jar() {
   if [ -z "$_jar" ]; then warn "no jar tool; classes are in $_cls"; return 0; fi
   mkdir -p "$OUT"
   ( cd "$_cls" && "$_jar" cf "$OUT/lwjgl.jar" . ) || { warn "jar creation failed"; return 0; }
+  _vk_class=$(find "$1/bin" -path '*/org/lwjgl/vulkan/VK.class' -type f 2>/dev/null | head -1)
+  if [ -n "$_vk_class" ]; then
+    _vk_root=${_vk_class%/org/lwjgl/vulkan/VK.class}
+    ( cd "$_vk_root" && "$_jar" uf "$OUT/lwjgl.jar" org/lwjgl/vulkan/VK.class ) ||
+      die "could not add patched Vulkan VK.class to $OUT/lwjgl.jar"
+    log "staged patched Vulkan VK.class from ${_vk_root#$WORK/}"
+  else
+    warn "patched Vulkan VK.class not found in LWJGL build output; runtime will use Mojang's stock VK.class"
+  fi
   log "staged lwjgl.jar from ${_cls#$WORK/}"
 }
 
@@ -202,9 +211,16 @@ comp_jemalloc() {
   _src=$WORK/src/jemalloc
   prepare jemalloc "$JEMALLOC_URL" "$JEMALLOC_REF" "$_src" "$PATCHES/jemalloc"
   [ -z "${PREPARE_ONLY:-}" ] || { log "jemalloc prepared at $_src"; return 0; }
-  cache_identity jemalloc "$_src" "$PATCHES/jemalloc" "prefix=je_;initial-exec-tls=off;background-thread=off;CFLAGS=$CFLAGS;LDFLAGS=$LDFLAGS"
+  case "$LWJGL_VERSION" in
+    3.4.3*) JEMALLOC_REQUIRED_SYMBOLS='je_free_sized je_free_aligned_sized' ;;
+    *) JEMALLOC_REQUIRED_SYMBOLS= ;;
+  esac
+  cache_identity jemalloc "$_src" "$PATCHES/jemalloc" "prefix=je_;initial-exec-tls=off;background-thread=off;required_symbols=$JEMALLOC_REQUIRED_SYMBOLS;CFLAGS=$CFLAGS;LDFLAGS=$LDFLAGS"
   cache_restore jemalloc libjemalloc.so
-  [ "$CACHE_HIT" -eq 1 ] && return 0
+  if [ "$CACHE_HIT" -eq 1 ]; then
+    jemalloc_symbols_check "$OUT/libjemalloc.so" || die "cached jemalloc lacks LWJGL sized-free symbols; rebuild jemalloc"
+    return 0
+  fi
   ( cd "$_src" 2>/dev/null || is_dry
     # git checkouts ship configure.ac only; release tarballs ship configure.
     if is_dry || [ ! -x ./configure ]; then run autoconf; fi
@@ -223,6 +239,7 @@ comp_jemalloc() {
     fi
     run "$MAKE" -j "$JOBS" build_lib_shared )
   stage_lib "$_src/lib" 'libjemalloc.so*' libjemalloc.so
+  jemalloc_symbols_check "$OUT/libjemalloc.so" || die "built jemalloc lacks LWJGL sized-free symbols; need je_free_sized and je_free_aligned_sized"
   cache_publish jemalloc "$OUT" libjemalloc.so || warn "failed to publish jemalloc cache entry"
 }
 

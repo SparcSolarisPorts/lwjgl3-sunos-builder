@@ -46,6 +46,14 @@ cache_restore sample libsample.so sample.jar || fail 'second restore failed'
 cmp -s "$TMP/input/libsample.so" "$TMP/out2/libsample.so" || fail 'second release native differs'
 cmp -s "$TMP/input/sample.jar" "$TMP/out2/sample.jar" || fail 'second release jar differs'
 
+# The LWJGL 3.4.3 jemalloc binding requires both sized-free exports.
+JEMALLOC_REQUIRED_SYMBOLS='je_free_sized je_free_aligned_sized'
+JEMALLOC_SYMBOLS=$(printf 'Symbol Table Section: .dynsym\n  [1] 0x0000 0 FUNC GLOB 0 DEFAULT je_free_sized\n  [2] 0x0000 0 FUNC GLOB 0 DEFAULT je_free_aligned_sized')
+jemalloc_symbols_text_check "$JEMALLOC_SYMBOLS" || fail 'required jemalloc symbols rejected'
+if jemalloc_symbols_text_check "$(printf 'Symbol Table Section: .dynsym\n  [1] 0x0000 0 FUNC GLOB 0 DEFAULT je_free_sized')"; then
+  fail 'incomplete jemalloc symbol set accepted'
+fi
+
 # Incomplete entries, wrong identity and corrupted payloads are misses.
 rm -f "$CACHE_DIR/complete"
 rm -f "$OUT/libsample.so" "$OUT/sample.jar"

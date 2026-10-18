@@ -99,7 +99,8 @@ class LauncherMetadataTests(unittest.TestCase):
             "LD_LIBRARY_PATH": "/custom/lib",
             "VK_DRIVER_FILES": "/etc/vulkan/icd.d/sparc.json",
         }
-        env = launcher.runtime_environment(pathlib.Path("/game/bin"), source)
+        with mock.patch.object(launcher.platform, "machine", return_value="sparcv9"):
+            env = launcher.runtime_environment(pathlib.Path("/game/bin"), source)
         entries = env["LD_LIBRARY_PATH"].split(":")
         self.assertEqual(entries[0], "/game/bin")
         self.assertIn("/opt/solaris/lib", entries)
@@ -108,6 +109,26 @@ class LauncherMetadataTests(unittest.TestCase):
         self.assertEqual(entries[-1], "/custom/lib")
         self.assertEqual(env["VK_DRIVER_FILES"], source["VK_DRIVER_FILES"])
         self.assertEqual(source["LD_LIBRARY_PATH"], "/custom/lib")
+        self.assertEqual(env["LD_LIBRARY_PATH_64"], env["LD_LIBRARY_PATH"])
+
+    def test_runtime_environment_preserves_64_bit_solaris_search_path(self):
+        source = {"LD_LIBRARY_PATH": "/legacy/lib", "LD_LIBRARY_PATH_64": "/sparcv9/lib"}
+        with mock.patch.object(launcher.platform, "machine", return_value="sparcv9"):
+            env = launcher.runtime_environment(pathlib.Path("/game/bin"), source)
+        self.assertIn("/legacy/lib", env["LD_LIBRARY_PATH"])
+        self.assertTrue(env["LD_LIBRARY_PATH_64"].endswith(":" + "/sparcv9/lib"))
+        self.assertEqual(source["LD_LIBRARY_PATH_64"], "/sparcv9/lib")
+
+    def test_vulkan_jvm_library_override(self):
+        self.assertEqual(launcher.vulkan_jvm_args({}), [])
+        self.assertEqual(launcher.vulkan_jvm_args({
+            "MC_VULKAN_LIBRARY_NAME": "/opt/vulkan/lib/sparcv9/libvulkan.so.1"
+        }), ["-Dorg.lwjgl.vulkan.libname=/opt/vulkan/lib/sparcv9/libvulkan.so.1"])
+
+    def test_runtime_environment_does_not_create_ld_library_path_64_off_sparc(self):
+        with mock.patch.object(launcher.platform, "machine", return_value="x86_64"):
+            env = launcher.runtime_environment(pathlib.Path("/game/bin"), {})
+        self.assertNotIn("LD_LIBRARY_PATH_64", env)
 
     def test_runtime_environment_adds_no_unconfigured_vulkan_defaults(self):
         env = launcher.runtime_environment(pathlib.Path("/game/bin"), {})

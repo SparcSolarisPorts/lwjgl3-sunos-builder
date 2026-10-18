@@ -342,7 +342,12 @@ cache_entry_valid() {
     cache_checksum "$_ce_dir/files/$_ce_file" || return 1
     _ce_count=$(grep -F -x -c "$_ce_file $CACHE_SUM" "$_ce_dir/files.manifest" 2>/dev/null || true)
     [ "${_ce_count:-0}" -eq 1 ] || return 1
-    case $_ce_file in *.so|*.so.*) elf_check "$_ce_dir/files/$_ce_file" || return 1 ;; esac
+    case $_ce_file in
+      *.so|*.so.*)
+        elf_check "$_ce_dir/files/$_ce_file" || return 1
+        [ "$_ce_file" != libjemalloc.so ] || jemalloc_symbols_check "$_ce_dir/files/$_ce_file" || return 1
+        ;;
+    esac
   done
   _ce_manifest_count=$(wc -l < "$_ce_dir/files.manifest" | tr -d ' ')
   [ "$_ce_manifest_count" -eq "$#" ] || return 1
@@ -432,7 +437,8 @@ cache_publish() {
   for _cp_file in "$@"; do
     [ ! -L "$_cp_src/$_cp_file" ] && [ -f "$_cp_src/$_cp_file" ] || { rm -rf "$_cp_tmp"; return 1; }
     case $_cp_file in *.so|*.so.*)
-      elf_check "$_cp_src/$_cp_file" || { rm -rf "$_cp_tmp"; warn "not caching invalid SPARCV9 native $_cp_src/$_cp_file"; return 1; } ;;
+      elf_check "$_cp_src/$_cp_file" || { rm -rf "$_cp_tmp"; warn "not caching invalid SPARCV9 native $_cp_src/$_cp_file"; return 1; }
+      [ "$_cp_file" != libjemalloc.so ] || jemalloc_symbols_check "$_cp_src/$_cp_file" || { rm -rf "$_cp_tmp"; warn "not caching jemalloc without LWJGL sized-free symbols: $_cp_src/$_cp_file"; return 1; } ;;
     esac
     cp "$_cp_src/$_cp_file" "$_cp_tmp/files/$_cp_file" || { rm -rf "$_cp_tmp"; return 1; }
     cache_checksum "$_cp_tmp/files/$_cp_file" || { rm -rf "$_cp_tmp"; return 1; }
@@ -490,6 +496,29 @@ elf_check() {
     [ "$_mach" = "${EXPECT_MACHINE:-002b}" ]
 }
 
+# jemalloc_symbols_text_check TEXT -- require version-specific LWJGL exports.
+jemalloc_symbols_text_check() {
+  _jt_symbols=$1
+  for _jt_symbol in ${JEMALLOC_REQUIRED_SYMBOLS:-}; do
+    printf '%s\n' "$_jt_symbols" | awk -v symbol="$_jt_symbol" '$NF == symbol { found=1 } END { exit !found }' || return 1
+  done
+}
+
+# jemalloc_symbols_check FILE -- inspect dynamic exports using Solaris or GNU tools.
+jemalloc_symbols_check() {
+  _js_file=$1
+  [ -n "${JEMALLOC_REQUIRED_SYMBOLS:-}" ] || return 0
+  _js_elfdump=$(command -v elfdump 2>/dev/null || true)
+  if [ -n "$_js_elfdump" ]; then
+    _js_symbols=$($_js_elfdump -s "$_js_file" 2>/dev/null) || return 1
+  else
+    _js_nm=$(command -v nm 2>/dev/null || true)
+    [ -n "$_js_nm" ] || return 1
+    _js_symbols=$($_js_nm -D "$_js_file" 2>/dev/null) || return 1
+  fi
+  jemalloc_symbols_text_check "$_js_symbols"
+}
+
 verify_natives() {
   is_dry && { printf '+ verify %s in %s\n' "$NATIVES" "$OUT" >&2; return 0; }
   _bad=0
@@ -500,6 +529,9 @@ verify_natives() {
       _actual=$(elf_header "$OUT/$_f" 2>/dev/null || true)
       printf 'WRONG-ELF %s (got %s; want 64-bit MSB, e_machine 0x%s)\n' \
         "$_f" "${_actual:-unreadable ELF header}" "${EXPECT_MACHINE:-002b}" >&2
+      _bad=$((_bad + 1))
+    elif [ "$_f" = libjemalloc.so ] && ! jemalloc_symbols_check "$OUT/$_f"; then
+      printf 'MISSING-SYMBOL %s (need je_free_sized and je_free_aligned_sized)\n' "$_f" >&2
       _bad=$((_bad + 1))
     else
       printf 'ok       %s\n' "$_f" >&2

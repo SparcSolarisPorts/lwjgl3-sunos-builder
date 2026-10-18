@@ -36,12 +36,22 @@ def runtime_environment(native_dir, source=None):
         ld_paths.append(env["VULKAN_LIBRARY_PATH"])
     if env.get("LD_LIBRARY_PATH"):
         ld_paths.append(env["LD_LIBRARY_PATH"])
+    if env.get("LD_LIBRARY_PATH_64"):
+        ld_paths.append(env["LD_LIBRARY_PATH_64"])
     env["LD_LIBRARY_PATH"] = ":".join(ld_paths)
+    if env.get("LD_LIBRARY_PATH_64") or "sparcv9" in platform.machine().lower():
+        env["LD_LIBRARY_PATH_64"] = ":".join(ld_paths)
     return env
 
 
+def vulkan_jvm_args(source=None):
+    env = os.environ if source is None else source
+    library_name = env.get("MC_VULKAN_LIBRARY_NAME")
+    return [f"-Dorg.lwjgl.vulkan.libname={library_name}"] if library_name else []
+
+
 def log_vulkan_configuration(env):
-    for name in ("VULKAN_LIBRARY_PATH", "VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+    for name in ("VULKAN_LIBRARY_PATH", "VK_DRIVER_FILES", "VK_ICD_FILENAMES", "MC_VULKAN_LIBRARY_NAME"):
         value = env.get(name)
         if value:
             print(f"launcher: {name}={value}", file=sys.stderr)
@@ -399,7 +409,9 @@ def main():
         if expanded.startswith(("-Djava.library.path=", "-Dorg.lwjgl.librarypath=")):
             continue
         args.append(expanded)
-    args += [f"-Djava.library.path={native_dir}", f"-Dorg.lwjgl.librarypath={native_dir}", "-cp", cp]
+    args += [f"-Djava.library.path={native_dir}", f"-Dorg.lwjgl.librarypath={native_dir}"]
+    args += vulkan_jvm_args()
+    args += ["-cp", cp]
     game_args = [substitute(arg, values) for arg in game]
     print(f"launcher: Minecraft {version}, Java {required_java or 'unspecified'}, natives={native_dir}", file=sys.stderr)
     print(f"launcher: classpath contains {len(classpath)} jars; credentials are not logged", file=sys.stderr)
