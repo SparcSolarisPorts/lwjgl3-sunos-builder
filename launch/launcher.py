@@ -331,6 +331,38 @@ def profile_arguments(metadata, key):
     return result
 
 
+def ensure_launcher_profile(metadata_home, game_dir, version, profile_name):
+    """Create installer-compatible local launcher profile metadata if absent."""
+    profile_name = re.sub(r"[^A-Za-z0-9._-]+", "-", profile_name).strip("-") or version
+    data = {
+        "profiles": {
+            profile_name: {
+                "name": profile_name,
+                "type": "custom",
+                "lastVersionId": version,
+                "gameDir": str(game_dir),
+            }
+        },
+        "selectedProfile": profile_name,
+        "version": 3,
+    }
+    game_dir.mkdir(parents=True, exist_ok=True)
+    paths = [metadata_home / "launcher_profile.json", metadata_home / "launcher_profiles.json"]
+    for path in paths:
+        if path.exists():
+            continue
+        temporary = path.with_name(f".{path.name}.tmp")
+        try:
+            temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    return paths[0]
+
+
 def combined_library_metadata(chain, profiles):
     libraries = []
     seen = set()
@@ -375,6 +407,7 @@ def launch_configuration(version, fabric_profiles=None):
     game_dir = pathlib.Path(os.environ.get("MC_GAME_DIR", default_mc if fabric else mc_home)).expanduser().resolve()
     if fabric:
         (game_dir / "mods").mkdir(parents=True, exist_ok=True)
+        ensure_launcher_profile(mc_home, game_dir, version, profile_name)
         extraction_dir = game_dir / ".solarislwjgl" / "natives" / profile_name
         for name in ("java", "jna", "lwjgl", "netty"):
             (extraction_dir / name).mkdir(parents=True, exist_ok=True)
