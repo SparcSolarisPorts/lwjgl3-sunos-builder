@@ -526,6 +526,31 @@ def parse_fabric_cli(argv):
     return version, profiles
 
 
+def vanilla_main():
+    if len(sys.argv) != 2:
+        fail("usage: launch-<version>.sh")
+    version = sys.argv[1]
+    configuration = launch_configuration(version, [])
+    java_home = pathlib.Path(os.environ.get("JAVA_HOME", "")).expanduser() if os.environ.get("JAVA_HOME") else None
+    java = str(java_home / "bin" / "java") if java_home else shutil.which("java")
+    if not java or not os.access(java, os.X_OK):
+        fail("Java executable not found; set JAVA_HOME to a supported Solaris JDK")
+    required_java = configuration["required_java"]
+    if required_java:
+        try:
+            detected = subprocess.check_output([java, "-version"], stderr=subprocess.STDOUT, text=True)
+            match = re.search(r'version "(?:1\\.)?(\\d+)', detected) or re.search(r'openjdk (\\d+)', detected)
+            if match and int(match.group(1)) < int(required_java):
+                fail(f"Minecraft {version} requires Java {required_java} or newer")
+        except (OSError, subprocess.CalledProcessError):
+            fail(f"cannot determine Java version from {java}")
+    print(f"launcher: Minecraft {version}, Java {required_java or 'unspecified'}, natives={configuration['native_dir']}", file=sys.stderr)
+    print(f"launcher: classpath contains {len(configuration['classpath'])} jars; credentials are not logged", file=sys.stderr)
+    runtime_env = runtime_environment(configuration["native_dir"])
+    log_vulkan_configuration(runtime_env)
+    os.execve(java, [java, *configuration["args"], configuration["main_class"], *configuration["game_args"]], runtime_env)
+
+
 def fabric_main():
     version, profiles = parse_fabric_cli(sys.argv[1:])
     configuration = launch_configuration(version, profiles)
