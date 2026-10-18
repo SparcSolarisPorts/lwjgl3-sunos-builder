@@ -201,9 +201,12 @@ lwjgl_stage_class_family() {
     [ -f "$_companion" ] || continue
     _files="$_files ${_companion#$_root/}"
   done
-  # shellcheck disable=SC2086
-  ( "$_jar" uf "$OUT/lwjgl.jar" -C "$_root" $_files ) ||
-    die "could not add patched LWJGL classes for $_class to $OUT/lwjgl.jar"
+  # Solaris jar applies -C only to the next file operand. Update each class
+  # separately so companions are resolved from the selected output root too.
+  for _file in $_files; do
+    ( "$_jar" uf "$OUT/lwjgl.jar" -C "$_root" "$_file" ) ||
+      die "could not add patched LWJGL class $_file to $OUT/lwjgl.jar"
+  done
   log "staged patched $_class family from ${_root#$WORK/}"
 }
 

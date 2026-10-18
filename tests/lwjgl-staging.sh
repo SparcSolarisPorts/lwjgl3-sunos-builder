@@ -40,7 +40,14 @@ while [ "$#" -gt 0 ]; do
         printf '%s\n' "$path" >> "$archive"
       done
       shift ;;
-    *) printf '%s\n' "$1" >> "$archive"; shift ;;
+    *)
+      # Solaris jar scopes -C to one following file. Validate the source
+      # path so a multi-file invocation regresses instead of masking this.
+      [ -f "$root/$1" ] || exit 1
+      printf '%s\n' "$1" >> "$archive"
+      root=.
+      shift
+      ;;
   esac
 done
 EOF
@@ -50,6 +57,7 @@ chmod +x "$TMP/java/bin/jar"
 for _class in \
   org/lwjgl/system/Platform.class \
   org/lwjgl/openal/ALC.class \
+  org/lwjgl/openal/ALC\$1.class \
   org/lwjgl/opengl/GL.class \
   org/lwjgl/opengles/GLES.class \
   org/lwjgl/vulkan/VK.class \
@@ -76,6 +84,7 @@ JAR=${OUT}/lwjgl.jar
 _has() { grep -Fx "$1" "$JAR" >/dev/null || die "jar lacks $1"; }
 _has org/lwjgl/system/Platform.class
 _has org/lwjgl/openal/ALC.class
+_has 'org/lwjgl/openal/ALC$1.class'
 _has org/lwjgl/opengl/GL.class
 _has org/lwjgl/opengles/GLES.class
 _has org/lwjgl/vulkan/VK.class
