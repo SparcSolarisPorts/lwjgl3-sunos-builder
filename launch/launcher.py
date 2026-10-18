@@ -405,9 +405,12 @@ def launch_configuration(version, fabric_profiles=None):
     fabric = bool(profiles)
     profile_name = profiles[-1].get("id", version) if fabric else version
     game_dir = pathlib.Path(os.environ.get("MC_GAME_DIR", default_mc if fabric else mc_home)).expanduser().resolve()
+    # Fabric Installer expects this file in the Minecraft metadata home.  Create
+    # it for vanilla launches too, since the normal release wrapper may be the
+    # first launcher command run on a fresh Solaris installation.
+    ensure_launcher_profile(mc_home, game_dir, version, profile_name)
     if fabric:
         (game_dir / "mods").mkdir(parents=True, exist_ok=True)
-        ensure_launcher_profile(mc_home, game_dir, version, profile_name)
         extraction_dir = game_dir / ".solarislwjgl" / "natives" / profile_name
         for name in ("java", "jna", "lwjgl", "netty"):
             (extraction_dir / name).mkdir(parents=True, exist_ok=True)
