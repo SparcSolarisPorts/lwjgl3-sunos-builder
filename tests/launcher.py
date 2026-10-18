@@ -188,6 +188,93 @@ class LauncherMetadataTests(unittest.TestCase):
                                                "size": len(index_bytes), "sha1": index_hash})
             self.assertEqual((home / "assets/objects" / digest[:2] / digest).read_bytes(), payload)
 
+    def test_fabric_urls_are_opt_in(self):
+        with self.assertRaises(ValueError):
+            launcher.validate_url("https://maven.fabricmc.net/net/fabricmc/fabric-loader/1.jar")
+        launcher.validate_url("https://maven.fabricmc.net/net/fabricmc/fabric-loader/1.jar", fabric=True)
+        with self.assertRaises(ValueError):
+            launcher.validate_url("http://res.tlauncher.org/fabric.jar", fabric=True)
+
+    def test_fabric_profile_accepts_values_and_loader_additions(self):
+        profile = {
+            "id": "fabric-loader-0.19.5-26.3",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "assets": "34",
+            "arguments": {
+                "default_user_jvm": [{"values": ["-Xmx4G"]}],
+                "game": [{"values": ["--gameDir", "${game_directory}"]}],
+            },
+            "libraries": [{"name": "net.fabricmc:fabric-loader:0.19.5", "url": "https://maven.fabricmc.net/"}],
+        }
+        base = {"assets": "34", "libraries": [{"name": "org.lwjgl:lwjgl:3.4.3"}]}
+        launcher.validate_fabric_profile(base, profile)
+        self.assertEqual(launcher.expand_entry({"values": ["-Xmx4G"]}), ["-Xmx4G"])
+        self.assertEqual(launcher.artifact_path(profile["libraries"][0]),
+                         "net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar")
+
+    def test_fabric_profile_rejects_stale_lwjgl_or_assets(self):
+        base = {"assets": "34", "libraries": [{"name": "org.lwjgl:lwjgl:3.4.3"}]}
+        stale = {"assets": "32", "libraries": [{"name": "org.lwjgl:lwjgl:3.4.1"}]}
+        with self.assertRaises(ValueError):
+            launcher.validate_fabric_profile(base, stale)
+
+    def test_fabric_cli_keeps_profile_separate_from_base_version(self):
+        self.assertEqual(launcher.parse_fabric_cli([
+            "--fabric", "--base-version", "26.3", "--loader-profile", "loader"
+        ]), ("26.3", ["loader"]))
+
+    def test_fabric_profile_ids_are_local_and_safe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = pathlib.Path(temp)
+            profile_dir = home / "versions" / "loader"
+            profile_dir.mkdir(parents=True)
+            profile = profile_dir / "loader.json"
+            profile.write_text('{"id":"loader"}')
+            self.assertEqual(launcher.resolve_local_profile(home, "loader"), profile.resolve())
+            with self.assertRaises(SystemExit):
+                launcher.resolve_local_profile(home, "../loader")
+
+    def test_fabric_configuration_uses_base_natives_and_game_mods(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            home = root / "home"
+            base_dir = home / "versions" / "26.3"
+            loader_dir = home / "versions" / "loader"
+            base_dir.mkdir(parents=True)
+            loader_dir.mkdir(parents=True)
+            client = base_dir / "26.3.jar"
+            client.write_bytes(b"client")
+            native = root / "native"
+            native.mkdir()
+            (native / "lwjgl.jar").write_bytes(b"patched")
+            base_lib = home / "libraries/org/lwjgl/lwjgl/3.4.3/lwjgl-3.4.3.jar"
+            base_lib.parent.mkdir(parents=True)
+            base_lib.write_bytes(b"base")
+            fabric_lib = home / "libraries/net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar"
+            fabric_lib.parent.mkdir(parents=True)
+            fabric_lib.write_bytes(b"fabric")
+            (base_dir / "26.3.json").write_text(json.dumps({
+                "id": "26.3", "mainClass": "net.minecraft.client.main.Main",
+                "downloads": {"client": {"url": "https://libraries.minecraft.net/client.jar"}},
+                "libraries": [{"name": "org.lwjgl:lwjgl:3.4.3"}],
+                "arguments": {"game": [{"value": ["--version", "${version_name}"]}]},
+            }))
+            (loader_dir / "loader.json").write_text(json.dumps({
+                "id": "loader", "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+                "assets": "34", "libraries": [{"name": "net.fabricmc:fabric-loader:0.19.5", "url": "https://maven.fabricmc.net/"}],
+                "arguments": {"default_user_jvm": [{"values": ["-Xmx4G"]}], "jvm": [{"values": ["-Djna.tmpdir=${natives_directory}/jna"]}], "game": [{"values": ["--gameDir", "${game_directory}"]}]},
+            }))
+            with mock.patch.dict(launcher.os.environ, {"MINECRAFT_HOME": str(home), "MC_NATIVE_DIR": str(native),
+                                                       "MC_GAME_DIR": str(root / "game")}, clear=False):
+                config = launcher.launch_configuration("26.3", ["loader"])
+            self.assertEqual(config["native_dir"], native.resolve())
+            self.assertEqual(config["main_class"], "net.fabricmc.loader.impl.launch.knot.KnotClient")
+            self.assertEqual(config["game_dir"], (root / "game").resolve())
+            self.assertTrue((root / "game/mods").is_dir())
+            self.assertIn(str(native / "lwjgl.jar"), config["classpath"][0])
+            self.assertNotIn("mods", config["cp"])
+            self.assertIn(str(root / "game/.solarislwjgl/natives/loader/jna"), " ".join(config["args"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 ASSET_OBJECT_URL = "https://resources.download.minecraft.net"
 DEFAULT_LIBRARY_URL = "https://libraries.minecraft.net/"
 OFFICIAL_DOWNLOAD_HOSTS = {"piston-meta.mojang.com", "launchermeta.mojang.com", "launcher.mojang.com", "libraries.minecraft.net", "resources.download.minecraft.net", "piston-data.mojang.com"}
+FABRIC_DOWNLOAD_HOSTS = {"maven.fabricmc.net"}
 DEFAULT_LIBRARY_PATH = "/usr/lib/64:/usr/lib/sparcv9:/usr/lib/mesa/sparcv9:/usr/lib/GL/sparcv9"
 
 
@@ -62,25 +63,26 @@ def log_vulkan_configuration(env):
             print(f"launcher: {name} is not set", file=sys.stderr)
 
 
-def validate_url(url):
+def validate_url(url, fabric=False):
     parsed = urllib.parse.urlparse(url)
-    if (parsed.scheme != "https" or parsed.hostname not in OFFICIAL_DOWNLOAD_HOSTS or
+    hosts = OFFICIAL_DOWNLOAD_HOSTS | (FABRIC_DOWNLOAD_HOSTS if fabric else set())
+    if (parsed.scheme != "https" or parsed.hostname not in hosts or
             parsed.username or parsed.password or parsed.port not in (None, 443)):
-        raise ValueError(f"untrusted Mojang download URL: {url}")
+        raise ValueError(f"untrusted {'Fabric or Mojang' if fabric else 'Mojang'} download URL: {url}")
     return url
 
 
-def fetch_bytes(url):
-    validate_url(url)
+def fetch_bytes(url, fabric=False):
+    validate_url(url, fabric=fabric)
     request = urllib.request.Request(url, headers={"User-Agent": "lwjgl3-sunos-builder/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
         final_url = response.geturl()
-        validate_url(final_url)
+        validate_url(final_url, fabric=fabric)
         return response.read()
 
 
-def fetch_json(url):
-    return json.loads(fetch_bytes(url).decode("utf-8"))
+def fetch_json(url, fabric=False):
+    return json.loads(fetch_bytes(url, fabric=fabric).decode("utf-8"))
 
 
 def safe_destination(root, relative):
@@ -114,8 +116,8 @@ def valid_payload(path, expected_size=None, expected_sha1=None):
         return False
 
 
-def download_file(url, destination, expected_size=None, expected_sha1=None):
-    validate_url(url)
+def download_file(url, destination, expected_size=None, expected_sha1=None, fabric=False):
+    validate_url(url, fabric=fabric)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file() and valid_payload(destination, expected_size, expected_sha1):
         return destination
@@ -125,7 +127,7 @@ def download_file(url, destination, expected_size=None, expected_sha1=None):
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "lwjgl3-sunos-builder/1.0"})
         with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
-            validate_url(response.geturl())
+            validate_url(response.geturl(), fabric=fabric)
             shutil.copyfileobj(response, output)
         if not valid_payload(temporary, expected_size, expected_sha1):
             raise ValueError(f"download verification failed for {url}")
@@ -163,7 +165,6 @@ def rules_allow(rules):
     if not rules:
         return True
     allowed = False
-    # This helper targets Solaris even when metadata is inspected from macOS.
     os_name = "solaris"
     arch = platform.machine().lower()
     for rule in rules:
@@ -172,8 +173,7 @@ def rules_allow(rules):
         if "arch" in test:
             expected = test["arch"]
             match = match and ((expected == "x86" and arch in ("i386", "i486", "i586", "i686")) or
-                               (expected == "x86_64" and arch in ("x86_64", "amd64")) or
-                               expected == arch)
+                               (expected == "x86_64" and arch in ("x86_64", "amd64")) or expected == arch)
         features = rule.get("features", {})
         if features:
             def enabled(feature):
@@ -195,13 +195,13 @@ def expand_entry(entry):
         return []
     if "rules" in entry and not rules_allow(entry["rules"]):
         return []
-    value = entry.get("value", [])
+    value = entry.get("value", entry.get("values", []))
     return value if isinstance(value, list) else [value]
 
 
 def artifact_path(library):
     downloads = library.get("downloads", {})
-    artifact = downloads.get("artifact")
+    artifact = downloads.get("artifact") or library.get("artifact")
     if artifact and artifact.get("path"):
         return artifact["path"]
     name = library.get("name", "")
@@ -231,15 +231,15 @@ def metadata_chain(mc_home, version):
 def acquire_assets(mc_home, asset_index):
     if not asset_index:
         return
+    if isinstance(asset_index, str):
+        asset_index = {"id": asset_index, "url": f"https://piston-meta.mojang.com/assets/{asset_index}.json"}
     index_id = asset_index.get("id")
     index_url = asset_index.get("url")
     if not index_id or not index_url:
         fail("assetIndex metadata is incomplete")
     try:
         index_path = safe_destination(mc_home, f"assets/indexes/{index_id}.json")
-        if index_path.is_file() and valid_payload(index_path, asset_index.get("size"), asset_index.get("sha1")):
-            pass
-        else:
+        if not (index_path.is_file() and valid_payload(index_path, asset_index.get("size"), asset_index.get("sha1"))):
             download_file(index_url, index_path, asset_index.get("size"), asset_index.get("sha1"))
         index = json.loads(index_path.read_text(encoding="utf-8"))
         for obj in index.get("objects", {}).values():
@@ -249,22 +249,13 @@ def acquire_assets(mc_home, asset_index):
             rel = f"assets/objects/{digest[:2].lower()}/{digest.lower()}"
             path = safe_destination(mc_home, rel)
             if not valid_payload(path, obj.get("size"), digest):
-                download_file(f"{ASSET_OBJECT_URL}/{digest[:2].lower()}/{digest.lower()}", path,
-                              obj.get("size"), digest)
+                download_file(f"{ASSET_OBJECT_URL}/{digest[:2].lower()}/{digest.lower()}", path, obj.get("size"), digest)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         fail(f"could not download/verify Minecraft assets: {exc}")
 
 
 def substitute(value, values):
-    env_names = {
-        "auth_uuid": "MC_UUID", "auth_access_token": "MC_ACCESS_TOKEN",
-        "clientid": "MC_CLIENT_ID", "auth_xuid": "MC_XUID",
-        "resolution_width": "MC_RESOLUTION_WIDTH", "resolution_height": "MC_RESOLUTION_HEIGHT",
-        "quickPlayPath": "MC_QUICKPLAY_PATH",
-        "quickPlaySingleplayer": "MC_QUICKPLAY_SINGLEPLAYER",
-        "quickPlayMultiplayer": "MC_QUICKPLAY_MULTIPLAYER",
-        "quickPlayRealms": "MC_QUICKPLAY_REALMS",
-    }
+    env_names = {"auth_uuid": "MC_UUID", "auth_access_token": "MC_ACCESS_TOKEN", "clientid": "MC_CLIENT_ID", "auth_xuid": "MC_XUID", "resolution_width": "MC_RESOLUTION_WIDTH", "resolution_height": "MC_RESOLUTION_HEIGHT", "quickPlayPath": "MC_QUICKPLAY_PATH", "quickPlaySingleplayer": "MC_QUICKPLAY_SINGLEPLAYER", "quickPlayMultiplayer": "MC_QUICKPLAY_MULTIPLAYER", "quickPlayRealms": "MC_QUICKPLAY_REALMS"}
     def replace(match):
         key = match.group(1)
         if key not in values or values[key] is None:
@@ -273,10 +264,93 @@ def substitute(value, values):
     return re.sub(r"\$\{([^}]+)\}", replace, value)
 
 
-def main():
-    if len(sys.argv) != 2:
-        fail("usage: launch-<version>.sh")
-    version = sys.argv[1]
+def resolve_local_profile(mc_home, specification):
+    if not specification:
+        fail("Fabric profile is required")
+    candidate = pathlib.Path(specification).expanduser()
+    if candidate.is_file():
+        return candidate.resolve()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", specification):
+        fail(f"invalid local Fabric profile ID: {specification}")
+    path = mc_home / "versions" / specification / f"{specification}.json"
+    if not path.is_file():
+        fail(f"Fabric profile not found: {path}")
+    return path.resolve()
+
+
+def read_local_profile(mc_home, specification):
+    path = resolve_local_profile(mc_home, specification)
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), path
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read Fabric profile {path}: {exc}")
+
+
+def metadata_asset_id(metadata):
+    asset_index = metadata.get("assetIndex")
+    if isinstance(asset_index, dict):
+        return asset_index.get("id")
+    return metadata.get("assets")
+
+
+def lwjgl_versions(metadata):
+    result = {}
+    for library in metadata.get("libraries", []):
+        parts = library.get("name", "").split(":")
+        if len(parts) >= 3 and parts[0] == "org.lwjgl":
+            result[parts[1]] = parts[2]
+    return result
+
+
+def validate_fabric_profile(base_metadata, profile):
+    base_client = base_metadata.get("downloads", {}).get("client", {})
+    profile_client = profile.get("downloads", {}).get("client", {})
+    if base_client and profile_client:
+        for key in ("sha1", "url"):
+            if base_client.get(key) and profile_client.get(key) and base_client[key] != profile_client[key]:
+                raise ValueError(f"Fabric profile conflicts with base client {key}")
+    base_assets = metadata_asset_id(base_metadata)
+    profile_assets = metadata_asset_id(profile)
+    if base_assets and profile_assets and base_assets != profile_assets:
+        raise ValueError(f"Fabric profile asset index {profile_assets} conflicts with base {base_assets}")
+    base_lwjgl = lwjgl_versions(base_metadata)
+    for name, version in lwjgl_versions(profile).items():
+        if name in base_lwjgl and base_lwjgl[name] != version:
+            raise ValueError(f"Fabric profile LWJGL {name}:{version} conflicts with base {name}:{base_lwjgl[name]}")
+
+
+def profile_arguments(metadata, key):
+    arguments = metadata.get("arguments", {})
+    entries = list(arguments.get(key, []))
+    if key == "jvm":
+        entries += arguments.get("default-user-jvm", [])
+        entries += arguments.get("default_user_jvm", [])
+    result = []
+    for entry in entries:
+        result.extend(expand_entry(entry))
+    return result
+
+
+def combined_library_metadata(chain, profiles):
+    libraries = []
+    seen = set()
+    for item, _ in chain:
+        for library in item.get("libraries", []):
+            key = library.get("name", "") or artifact_path(library)
+            if key not in seen:
+                seen.add(key)
+                libraries.append((False, library))
+    for profile in profiles:
+        for library in profile.get("libraries", []):
+            key = library.get("name", "") or artifact_path(library)
+            if key not in seen:
+                seen.add(key)
+                libraries.append((True, library))
+    return libraries
+
+
+def launch_configuration(version, fabric_profiles=None):
+    fabric_profiles = fabric_profiles or []
     repo = pathlib.Path(__file__).resolve().parent.parent
     default_mc = pathlib.Path.home() / ".minecraft"
     mac_mc = pathlib.Path.home() / "Library" / "Application Support" / "minecraft"
@@ -284,56 +358,62 @@ def main():
     native_dir = pathlib.Path(os.environ.get("MC_NATIVE_DIR", repo / "bin" / version)).expanduser().resolve()
     if not native_dir.is_dir():
         fail(f"native directory not found: {native_dir}; build this release first")
-
     chain = metadata_chain(mc_home, version)
-    meta = chain[-1][0]
     effective = {}
     for item, _ in chain:
         effective.update(item)
-    version_dir = mc_home / "versions" / version
-    client_info = meta.get("downloads", {}).get("client")
+    profiles = []
+    for specification in fabric_profiles:
+        profile, path = read_local_profile(mc_home, specification)
+        try:
+            validate_fabric_profile(effective, profile)
+        except ValueError as exc:
+            fail(f"incompatible Fabric profile {path}: {exc}")
+        profiles.append(profile)
+    fabric = bool(profiles)
+    profile_name = profiles[-1].get("id", version) if fabric else version
+    game_dir = pathlib.Path(os.environ.get("MC_GAME_DIR", default_mc if fabric else mc_home)).expanduser().resolve()
+    if fabric:
+        (game_dir / "mods").mkdir(parents=True, exist_ok=True)
+        extraction_dir = game_dir / ".solarislwjgl" / "natives" / profile_name
+        for name in ("java", "jna", "lwjgl", "netty"):
+            (extraction_dir / name).mkdir(parents=True, exist_ok=True)
+    else:
+        extraction_dir = native_dir
+    client_info = effective.get("downloads", {}).get("client")
     if not client_info or not client_info.get("url"):
         fail(f"client download metadata missing for {version}")
     try:
         client_rel = client_info.get("path") or f"versions/{version}/{version}.jar"
         client = safe_destination(mc_home, client_rel)
-        download_file(client_info["url"], client, client_info.get("size"), client_info.get("sha1"))
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        fail(f"could not obtain client jar for Minecraft {version}: {exc}")
-    try:
-        acquire_assets(mc_home, meta.get("assetIndex"))
+        download_file(client_info["url"], client, client_info.get("size"), client_info.get("sha1"), fabric=fabric)
+        acquire_assets(mc_home, effective.get("assetIndex"))
     except SystemExit:
         raise
-    main_class = effective.get("mainClass")
-    if not main_class:
-        fail(f"mainClass is missing from metadata for {version}")
-
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        fail(f"could not obtain Minecraft files for {version}: {exc}")
     classpath = []
-    for item, _ in chain:
-        for library in item.get("libraries", []):
-            if not rules_allow(library.get("rules", [])):
-                continue
-            name = library.get("name", "")
-            # Native classifier jars are not Solaris-compatible; native files
-            # come from bin/<version> instead. Non-native classifiers such as
-            # LWJGL's "unsafe" Java artifact remain on the classpath.
-            parts = name.split(":")
-            if len(parts) > 3 and parts[3].startswith("natives-"):
-                continue
-            artifact = library.get("downloads", {}).get("artifact", {})
-            rel = artifact_path(library)
-            if not rel:
-                continue
-            try:
-                jar = safe_destination(mc_home, f"libraries/{rel}")
-                url = artifact.get("url")
-                if not url:
-                    base = library.get("url") or DEFAULT_LIBRARY_URL
-                    url = urllib.parse.urljoin(base.rstrip("/") + "/", rel)
-                download_file(url, jar, artifact.get("size"), artifact.get("sha1"))
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                fail(f"could not obtain library {name}: {exc}")
-            classpath.append(str(jar))
+    for is_fabric, library in combined_library_metadata(chain, profiles):
+        if not rules_allow(library.get("rules", [])):
+            continue
+        name = library.get("name", "")
+        parts = name.split(":")
+        if len(parts) > 3 and parts[3].startswith("natives-"):
+            continue
+        artifact = library.get("downloads", {}).get("artifact") or library.get("artifact") or {}
+        rel = artifact_path(library)
+        if not rel:
+            continue
+        try:
+            jar = safe_destination(mc_home, f"libraries/{rel}")
+            url = artifact.get("url")
+            if not url:
+                base = library.get("url") or DEFAULT_LIBRARY_URL
+                url = urllib.parse.urljoin(base.rstrip("/") + "/", rel)
+            download_file(url, jar, artifact.get("size"), artifact.get("sha1"), fabric=fabric and is_fabric)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            fail(f"could not obtain library {name}: {exc}")
+        classpath.append(str(jar))
     if not classpath:
         fail(f"no Java libraries found in metadata for {version}")
     stock_lwjgl = [p for p in classpath if re.search(r"/org/lwjgl/lwjgl/[0-9][^/]*/lwjgl-[^/]+\.jar$", p)]
@@ -345,87 +425,99 @@ def main():
         fail(f"patched core jar missing: {patched_jar}")
     classpath.append(str(client))
     cp = os.pathsep.join(classpath)
-
-    java_home = pathlib.Path(os.environ.get("JAVA_HOME", "" )).expanduser() if os.environ.get("JAVA_HOME") else None
-    java = str(java_home / "bin" / "java") if java_home else shutil.which("java")
-    if not java or not os.access(java, os.X_OK):
-        fail("Java executable not found; set JAVA_HOME to a supported Solaris JDK")
-    required_java = meta.get("javaVersion", {}).get("majorVersion")
-    if required_java:
-        try:
-            detected = subprocess.check_output([java, "-version"], stderr=subprocess.STDOUT, text=True)
-            match = re.search(r'version "(?:1\.)?(\d+)', detected)
-            if not match:
-                match = re.search(r'openjdk (\d+)', detected)
-            if match and int(match.group(1)) < int(required_java):
-                fail(f"Minecraft {version} requires Java {required_java} or newer")
-        except (OSError, subprocess.CalledProcessError):
-            fail(f"cannot determine Java version from {java}")
-
+    main_class = profiles[-1].get("mainClass", effective.get("mainClass")) if fabric else effective.get("mainClass")
+    if not main_class:
+        fail(f"mainClass is missing from metadata for {version}")
+    args_source = profiles[-1] if fabric else effective
+    jvm = profile_arguments(effective, "jvm")
+    game = profile_arguments(args_source, "game")
+    for profile in profiles:
+        jvm.extend(profile_arguments(profile, "jvm"))
+    if not game and effective.get("minecraftArguments"):
+        game = shlex.split(effective["minecraftArguments"])
+    if not jvm and not game:
+        fail(f"no supported game arguments in metadata for {version}")
     values = {
-        "auth_player_name": os.environ.get("MC_USERNAME", "Player"),
-        "version_name": version,
-        "game_directory": os.environ.get("MC_GAME_DIR", str(mc_home)),
-        "assets_root": str(mc_home / "assets"),
-        "assets_index_name": meta.get("assetIndex", {}).get("id"),
-        "auth_uuid": os.environ.get("MC_UUID"),
-        "auth_access_token": os.environ.get("MC_ACCESS_TOKEN"),
-        "clientid": os.environ.get("MC_CLIENT_ID"),
-        "auth_xuid": os.environ.get("MC_XUID", ""),
-        "user_type": os.environ.get("MC_USER_TYPE", "msa"),
-        "version_type": os.environ.get("MC_VERSION_TYPE", "release"),
-        "classpath": cp,
-        "natives_directory": str(native_dir),
-        "launcher_name": os.environ.get("MC_LAUNCHER_NAME", "SolarisSPARC"),
-        "launcher_version": os.environ.get("MC_LAUNCHER_VERSION", "1"),
-        "resolution_width": os.environ.get("MC_RESOLUTION_WIDTH"),
-        "resolution_height": os.environ.get("MC_RESOLUTION_HEIGHT"),
-        "quickPlayPath": os.environ.get("MC_QUICKPLAY_PATH"),
-        "quickPlaySingleplayer": os.environ.get("MC_QUICKPLAY_SINGLEPLAYER"),
-        "quickPlayMultiplayer": os.environ.get("MC_QUICKPLAY_MULTIPLAYER"),
+        "auth_player_name": os.environ.get("MC_USERNAME", "Player"), "version_name": profile_name,
+        "game_directory": str(game_dir), "assets_root": os.environ.get("MC_ASSETS_DIR", str(mc_home / "assets")),
+        "assets_index_name": metadata_asset_id(effective), "auth_uuid": os.environ.get("MC_UUID"),
+        "auth_access_token": os.environ.get("MC_ACCESS_TOKEN"), "clientid": os.environ.get("MC_CLIENT_ID"),
+        "auth_xuid": os.environ.get("MC_XUID", ""), "user_type": os.environ.get("MC_USER_TYPE", "msa"),
+        "version_type": os.environ.get("MC_VERSION_TYPE", "release"), "classpath": cp,
+        "natives_directory": str(extraction_dir), "launcher_name": os.environ.get("MC_LAUNCHER_NAME", "SolarisSPARC"),
+        "launcher_version": os.environ.get("MC_LAUNCHER_VERSION", "1"), "resolution_width": os.environ.get("MC_RESOLUTION_WIDTH"),
+        "resolution_height": os.environ.get("MC_RESOLUTION_HEIGHT"), "quickPlayPath": os.environ.get("MC_QUICKPLAY_PATH"),
+        "quickPlaySingleplayer": os.environ.get("MC_QUICKPLAY_SINGLEPLAYER"), "quickPlayMultiplayer": os.environ.get("MC_QUICKPLAY_MULTIPLAYER"),
         "quickPlayRealms": os.environ.get("MC_QUICKPLAY_REALMS"),
     }
-    if meta.get("arguments"):
-        args_meta = meta["arguments"]
-        jvm = []
-        for entry in args_meta.get("jvm", []) + args_meta.get("default-user-jvm", []):
-            jvm.extend(expand_entry(entry))
-        game = []
-        for entry in args_meta.get("game", []):
-            game.extend(expand_entry(entry))
-    elif meta.get("minecraftArguments"):
-        jvm = ["-Djava.library.path=" + str(native_dir), "-Dorg.lwjgl.librarypath=" + str(native_dir), "-cp", cp]
-        game = shlex.split(meta["minecraftArguments"])
-    else:
-        fail(f"no supported game arguments in metadata for {version}")
-
     args = []
     skip_next = False
     for raw in jvm:
         if skip_next:
             skip_next = False
             continue
-        if raw == "-cp" or raw == "-classpath":
+        if raw in ("-cp", "-classpath"):
             skip_next = True
             continue
         expanded = substitute(raw, values)
         if expanded.startswith(("-Djava.library.path=", "-Dorg.lwjgl.librarypath=")):
             continue
         args.append(expanded)
-    args += [f"-Djava.library.path={native_dir}", f"-Dorg.lwjgl.librarypath={native_dir}"]
-    args += vulkan_jvm_args()
-    args += ["-cp", cp]
+    args += [f"-Djava.library.path={native_dir}", f"-Dorg.lwjgl.librarypath={native_dir}", *vulkan_jvm_args(), "-cp", cp]
     game_args = [substitute(arg, values) for arg in game]
-    print(f"launcher: Minecraft {version}, Java {required_java or 'unspecified'}, natives={native_dir}", file=sys.stderr)
-    print(f"launcher: classpath contains {len(classpath)} jars; credentials are not logged", file=sys.stderr)
+    return {"mc_home": mc_home, "native_dir": native_dir, "game_dir": game_dir, "extraction_dir": extraction_dir,
+            "client": client, "classpath": classpath, "cp": cp, "main_class": main_class, "args": args,
+            "game_args": game_args, "required_java": effective.get("javaVersion", {}).get("majorVersion"),
+            "profile_name": profile_name, "fabric": fabric}
 
-    runtime_env = runtime_environment(native_dir)
-    mesa_override = runtime_env.get("MESA_GL_VERSION_OVERRIDE")
-    if mesa_override:
-        runtime_env["MESA_GL_VERSION_OVERRIDE"] = mesa_override
+
+def parse_fabric_cli(argv):
+    if not argv or argv[0] != "--fabric":
+        if len(argv) != 1:
+            fail("usage: launch-<version>.sh")
+        return argv[0], []
+    options = {}
+    i = 1
+    while i < len(argv):
+        if argv[i] in ("--base-version", "--fabric-profile", "--loader-profile", "--profile"):
+            if i + 1 >= len(argv):
+                fail(f"missing value for {argv[i]}")
+            options[argv[i]] = argv[i + 1]
+            i += 2
+        else:
+            fail(f"unknown Fabric option: {argv[i]}")
+    version = options.get("--base-version")
+    profiles = [item for item in (options.get("--fabric-profile"), options.get("--loader-profile") or options.get("--profile")) if item]
+    if not version or not profiles:
+        fail("usage: launcher.py --fabric --base-version VERSION --loader-profile PROFILE")
+    return version, profiles
+
+
+def fabric_main():
+    version, profiles = parse_fabric_cli(sys.argv[1:])
+    configuration = launch_configuration(version, profiles)
+    java_home = pathlib.Path(os.environ.get("JAVA_HOME", "")).expanduser() if os.environ.get("JAVA_HOME") else None
+    java = str(java_home / "bin" / "java") if java_home else shutil.which("java")
+    if not java or not os.access(java, os.X_OK):
+        fail("Java executable not found; set JAVA_HOME to a supported Solaris JDK")
+    required_java = configuration["required_java"]
+    if required_java:
+        try:
+            detected = subprocess.check_output([java, "-version"], stderr=subprocess.STDOUT, text=True)
+            match = re.search(r'version "(?:1\\.)?(\\d+)', detected) or re.search(r'openjdk (\\d+)', detected)
+            if match and int(match.group(1)) < int(required_java):
+                fail(f"Minecraft {version} requires Java {required_java} or newer")
+        except (OSError, subprocess.CalledProcessError):
+            fail(f"cannot determine Java version from {java}")
+    print(f"launcher: Minecraft {version}{' with Fabric ' + configuration['profile_name'] if configuration['fabric'] else ''}, Java {required_java or 'unspecified'}, natives={configuration['native_dir']}", file=sys.stderr)
+    print(f"launcher: classpath contains {len(configuration['classpath'])} jars; credentials are not logged", file=sys.stderr)
+    runtime_env = runtime_environment(configuration["native_dir"])
     log_vulkan_configuration(runtime_env)
-    os.execve(java, [java, *args, main_class, *game_args], runtime_env)
+    os.execve(java, [java, *configuration["args"], configuration["main_class"], *configuration["game_args"]], runtime_env)
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--fabric":
+        fabric_main()
+    else:
+        vanilla_main()
