@@ -225,11 +225,32 @@ cache_tool_fingerprint() {
   CACHE_TOOL_FINGERPRINT="$_ct_path:$CACHE_SUM"
 }
 
+# cache_dependency_fingerprint DIR -- emit a stable commit/worktree fingerprint.
+cache_dependency_fingerprint() {
+  _cdf_dir=$1
+  _cdf_prefix=$(git -C "$_cdf_dir" rev-parse --show-prefix 2>/dev/null) || return 1
+  [ -z "$_cdf_prefix" ] || return 1
+  _cdf_head=$(git -C "$_cdf_dir" rev-parse HEAD 2>/dev/null) || return 1
+  _cdf_diff=$(git -C "$_cdf_dir" diff --binary HEAD 2>/dev/null) || return 1
+  _cdf_digest=$(printf '%s' "$_cdf_diff" | cksum) || return 1
+  _cdf_files=$(git -C "$_cdf_dir" ls-files --others --exclude-standard 2>/dev/null) || return 1
+  _cdf_extra=
+  while IFS= read -r _cdf_file; do
+    [ -n "$_cdf_file" ] || continue
+    [ ! -L "$_cdf_dir/$_cdf_file" ] && [ -f "$_cdf_dir/$_cdf_file" ] || return 1
+    cache_checksum "$_cdf_dir/$_cdf_file" || return 1
+    _cdf_extra="$_cdf_extra;$_cdf_file=$CACHE_SUM"
+  done <<EOF
+$_cdf_files
+EOF
+  printf '%s;diff=%s;untracked=%s' "$_cdf_head" "$_cdf_digest" "$_cdf_extra"
+}
+
 # cache_identity NAME SRCDIR PATCHDIR EXTRA
 # Sets CACHE_KEY and CACHE_ID from the resolved source, ordered patch contents,
 # recipe parameters, target flags, selected toolchain versions and environment.
 cache_identity() {
-  _ci_name=$1; _ci_src=$2; _ci_patchdir=$3; _ci_extra=$4
+  _ci_name=$1; _ci_src=$2; _ci_patchdir=$3; _ci_extra=$4; _ci_exclude=${5:-}
   CACHE_SAFE=1
   cache_valid_name "$_ci_name" || die "invalid cache component name: $_ci_name"
   if is_dry; then
@@ -260,7 +281,10 @@ cache_identity() {
         _ci_list=
         while IFS= read -r _ci_file; do
           [ -n "$_ci_file" ] || continue
-          case $_ci_file in *'|'*|*';'*|*'='*) CACHE_SAFE=0; continue ;; esac
+          case $_ci_file in *'|'*|*';'*) CACHE_SAFE=0; continue ;; esac
+          case "$_ci_file" in
+            "$_ci_exclude"|"$_ci_exclude"/*) [ -n "$_ci_exclude" ] && continue ;;
+          esac
           [ ! -L "$_ci_src/$_ci_file" ] && [ -f "$_ci_src/$_ci_file" ] || { CACHE_SAFE=0; continue; }
           cache_checksum "$_ci_src/$_ci_file" || { CACHE_SAFE=0; continue; }
           _ci_list="$_ci_list|$_ci_file=$CACHE_SUM"
@@ -314,10 +338,13 @@ cache_identity() {
     "$_ci_name" "$_ci_commit" "$_ci_tree" "$_ci_patches" "$(uname -s 2>/dev/null || printf unknown)" \
     "$(uname -m 2>/dev/null || printf unknown)" "${EXPECT_MACHINE:-002b}" "${ARCH_FLAGS:-}" "$CC:$_ci_cc" "$CXX:$_ci_cxx" "${CFLAGS:-}" "${CXXFLAGS:-}" "${LDFLAGS:-}" "$_ci_dep_env" \
     "$_ci_tools" "$_ci_java" "${JOBS:-}" "$_ci_extra")
-  case "$_ci_extra${CC}${CXX}${CFLAGS:-}${CXXFLAGS:-}${LDFLAGS:-}${CPPFLAGS:-}${CPATH:-}${C_INCLUDE_PATH:-}${CPLUS_INCLUDE_PATH:-}${LIBRARY_PATH:-}${SDKROOT:-}${SYSROOT:-}${CMAKE_PREFIX_PATH:-}${CMAKE_TOOLCHAIN_FILE:-}${PKG_CONFIG_PATH:-}${PKG_CONFIG_LIBDIR:-}${PATH:-}${_ci_cc_path}${_ci_cxx_path}${_ci_make_path}${_ci_cmake_path}${_ci_ant}${_ci_java}" in *'|'*|*';'*) CACHE_SAFE=0 ;; esac
-  case "$_ci_extra" in *'='*=*) CACHE_SAFE=0 ;; esac
+  _ci_env_values=${CC}${CXX}${CFLAGS:-}${CXXFLAGS:-}${LDFLAGS:-}${CPPFLAGS:-}${CPATH:-}${C_INCLUDE_PATH:-}${CPLUS_INCLUDE_PATH:-}${LIBRARY_PATH:-}${SDKROOT:-}${SYSROOT:-}${CMAKE_PREFIX_PATH:-}${CMAKE_TOOLCHAIN_FILE:-}${PKG_CONFIG_PATH:-}${PKG_CONFIG_LIBDIR:-}${PATH:-}${_ci_cc_path}${_ci_cxx_path}${_ci_make_path}${_ci_cmake_path}${_ci_ant}${_ci_java}
+  case "$_ci_env_values" in *'|'*|*';'*) CACHE_SAFE=0 ;; esac
+  _ci_nl=$(printf '\nx'); _ci_nl=${_ci_nl%x}
+  _ci_cr=$(printf '\rx'); _ci_cr=${_ci_cr%x}
+  case "$_ci_extra" in *"$_ci_nl"*|*"$_ci_cr"*|*'|'*) CACHE_SAFE=0 ;; esac
   case "${CC}${CXX}${CFLAGS:-}${CXXFLAGS:-}${LDFLAGS:-}${CPPFLAGS:-}${CPATH:-}${C_INCLUDE_PATH:-}${CPLUS_INCLUDE_PATH:-}${LIBRARY_PATH:-}${SDKROOT:-}${SYSROOT:-}${CMAKE_PREFIX_PATH:-}${CMAKE_TOOLCHAIN_FILE:-}${PKG_CONFIG_PATH:-}${PKG_CONFIG_LIBDIR:-}${PATH:-}" in *'|'*|*';'*) CACHE_SAFE=0 ;; esac
-  rm -rf "$_ci_tmp"
+  rm -rf "$_ci_tmp" "$_ci_tmp.diff" "$_ci_tmp.files"
   cache_digest "$CACHE_ID" || die "cannot checksum cache identity"
   CACHE_KEY=$CACHE_DIGEST
   CACHE_DIR=$ARTIFACTS/$_ci_name/$CACHE_KEY
@@ -352,12 +379,30 @@ cache_entry_valid() {
   _ce_manifest_count=$(wc -l < "$_ce_dir/files.manifest" | tr -d ' ')
   [ "$_ce_manifest_count" -eq "$#" ] || return 1
   _ce_payload_count=$(find "$_ce_dir/files" -type f -print | wc -l | tr -d ' ')
-  [ "$_ce_payload_count" -eq "$#" ] || return 1
-  while IFS= read -r _ce_line; do
+  _ce_dir_count=$(find "$_ce_dir/files" -type d -print | wc -l | tr -d ' ')
+  _ce_other_count=$(find "$_ce_dir/files" ! -type f ! -type d -print | wc -l | tr -d ' ')
+  [ "$_ce_payload_count" -eq "$#" ] && [ "$_ce_dir_count" -eq 1 ] && [ "$_ce_other_count" -eq 0 ] || return 1
+  _ce_seen=' '
+  _ce_lines=0
+  while IFS= read -r _ce_line || [ -n "$_ce_line" ]; do
+    [ -n "$_ce_line" ] || return 1
     _ce_name=${_ce_line%% *}
+    [ "$_ce_name" != "$_ce_line" ] || return 1
+    _ce_rest=${_ce_line#* }
+    case $_ce_rest in *' '*) ;; *) return 1 ;; esac
+    case $_ce_rest in *''*) return 1 ;; esac
+    _ce_sum=${_ce_rest%% *}
+    _ce_size=${_ce_rest#* }
+    case "$_ce_sum" in ''|*[!0-9]*) return 1 ;; esac
+    case "$_ce_size" in ''|*[!0-9]*) return 1 ;; esac
+    case $_ce_size in *' '*) return 1 ;; esac
+    case $_ce_seen in *" $_ce_name "*) return 1 ;; esac
     cache_valid_name "$_ce_name" || return 1
     case $_ce_expected in *" $_ce_name "*) : ;; *) return 1 ;; esac
+    _ce_seen="$_ce_seen$_ce_name "
+    _ce_lines=$((_ce_lines + 1))
   done < "$_ce_dir/files.manifest"
+  [ "$_ce_lines" -eq "$#" ] || return 1
   return 0
 }
 
@@ -418,6 +463,12 @@ cache_restore() {
 
 # cache_publish NAME SOURCE_DIR FILE... -- publish a complete cache entry.
 # Entry visibility is atomic; flat output restore is rollback-oriented, not atomic.
+cache_lock_release() {
+  [ "$(cat "$1/owner" 2>/dev/null || true)" = "$2" ] || return 0
+  rm -f "$1/owner"
+  rmdir "$1" 2>/dev/null || warn "could not release cache lock: $1"
+}
+
 cache_publish() {
   _cp_name=$1; _cp_src=$2; shift 2
   is_dry && return 0
@@ -447,25 +498,122 @@ cache_publish() {
   printf '%s' "$CACHE_ID" > "$_cp_tmp/identity" || { rm -rf "$_cp_tmp"; return 1; }
   : > "$_cp_tmp/complete" || { rm -rf "$_cp_tmp"; return 1; }
   cache_entry_valid "$_cp_tmp" "$CACHE_ID" "$@" || { rm -rf "$_cp_tmp"; return 1; }
-  if ! mkdir "$_cp_lock" 2>/dev/null; then
+  _cp_host=$(uname -n 2>/dev/null || printf unknown)
+  _cp_now=$(date +%s 2>/dev/null || printf 0)
+  case $_cp_now in ''|*[!0-9]*) _cp_now=0 ;; esac
+  _cp_owner_line="$$ $_cp_host $_cp_now"
+  _cp_attempt=0
+  while ! mkdir "$_cp_lock" 2>/dev/null; do
+    if [ ! -d "$_cp_lock" ] || [ -L "$_cp_lock" ]; then
+      rm -rf "$_cp_tmp"
+      warn "cannot acquire cache publisher lock: $_cp_lock"
+      return 1
+    fi
+    _cp_owner=$(cat "$_cp_lock/owner" 2>/dev/null || true)
+    _cp_owner_pid=${_cp_owner%% *}
+    _cp_owner_rest=${_cp_owner#* }
+    _cp_owner_host=${_cp_owner_rest%% *}
+    _cp_owner_epoch=${_cp_owner_rest#* }
+    _cp_is_stale=0
+    case "$_cp_owner_pid" in ''|*[!0-9]*)
+      _cp_grace=${CACHE_LOCK_GRACE_SECONDS:-5}
+      case $_cp_grace in ''|*[!0-9]*) _cp_grace=5 ;; esac
+      _cp_wait=0
+      while [ "$_cp_wait" -lt "$_cp_grace" ] && [ -d "$_cp_lock" ]; do
+        sleep 1
+        _cp_wait=$((_cp_wait + 1))
+        _cp_owner=$(cat "$_cp_lock/owner" 2>/dev/null || true)
+        _cp_owner_pid=${_cp_owner%% *}
+        _cp_owner_rest=${_cp_owner#* }
+        _cp_owner_host=${_cp_owner_rest%% *}
+        _cp_owner_epoch=${_cp_owner_rest#* }
+        case $_cp_owner_pid in ''|*[!0-9]*) ;; *) break ;; esac
+      done
+      case $_cp_owner_pid in ''|*[!0-9]*) _cp_is_stale=1 ;; esac ;;
+    *)
+      if [ "$_cp_owner_host" = "$_cp_host" ] && ! kill -0 "$_cp_owner_pid" 2>/dev/null; then
+        _cp_is_stale=1
+      fi ;;
+    esac
+    case $_cp_owner_epoch in ''|*[!0-9]*) ;; *)
+      _cp_now=$(date +%s 2>/dev/null || printf 0)
+      case $_cp_now in ''|*[!0-9]*) _cp_now=0 ;; esac
+      _cp_age_limit=${CACHE_LOCK_STALE_SECONDS:-600}
+      case $_cp_age_limit in ''|*[!0-9]*) _cp_age_limit=600 ;; esac
+      if [ "$_cp_now" -gt 0 ] && [ "$_cp_owner_epoch" -gt 0 ] &&
+         [ "$_cp_now" -gt "$_cp_owner_epoch" ] &&
+         [ $((_cp_now - _cp_owner_epoch)) -gt "$_cp_age_limit" ]; then
+        _cp_is_stale=1
+      fi ;;
+    esac
+    if [ "$_cp_is_stale" -eq 1 ]; then
+      _cp_stale=$_cp_lock.stale.$$
+      _cp_n=0
+      while [ -e "$_cp_stale" ] || [ -L "$_cp_stale" ]; do
+        _cp_n=$((_cp_n + 1)); _cp_stale=$_cp_lock.stale.$$.$_cp_n
+        [ "$_cp_n" -lt 100 ] || break
+      done
+      if [ "$_cp_n" -lt 100 ] && mv "$_cp_lock" "$_cp_stale" 2>/dev/null; then
+        rm -rf "$_cp_stale"
+        _cp_attempt=$((_cp_attempt + 1))
+        [ "$_cp_attempt" -lt 3 ] && continue
+      fi
+    fi
     rm -rf "$_cp_tmp"
-    warn "cache publisher lock exists; skipping publication: $_cp_lock"
+    warn "cache publisher lock is held or cannot be safely recovered; skipping publication: $_cp_lock"
     return 0
+  done
+  _cp_now=$(date +%s 2>/dev/null || printf 0)
+  case $_cp_now in ''|*[!0-9]*) _cp_now=0 ;; esac
+  if ! printf '%s\n' "$_cp_owner_line" > "$_cp_lock/owner"; then
+    rmdir "$_cp_lock" 2>/dev/null || true
+    rm -rf "$_cp_tmp"
+    warn "cannot record cache publisher lock owner: $_cp_lock"
+    return 1
   fi
+  _cp_invalid=
   if [ -e "$CACHE_DIR" ] || [ -L "$CACHE_DIR" ]; then
     if cache_entry_valid "$CACHE_DIR" "$CACHE_ID" "$@"; then
-      rm -rf "$_cp_tmp" "$_cp_lock"
+      rm -rf "$_cp_tmp"
+      cache_lock_release "$_cp_lock" "$_cp_owner_line"
       return 0
     fi
-    rm -rf "$_cp_tmp" "$_cp_lock"
-    warn "refusing to replace existing invalid cache key: $CACHE_DIR"
+    _cp_invalid=$_cp_parent/.$CACHE_KEY.invalid.$$
+    _cp_n=0
+    while [ -e "$_cp_invalid" ] || [ -L "$_cp_invalid" ]; do
+      _cp_n=$((_cp_n + 1)); _cp_invalid=$_cp_parent/.$CACHE_KEY.invalid.$$.$_cp_n
+      [ "$_cp_n" -lt 100 ] || break
+    done
+    if [ "$_cp_n" -ge 100 ] || ! mv "$CACHE_DIR" "$_cp_invalid" 2>/dev/null; then
+      rm -rf "$_cp_tmp"
+      cache_lock_release "$_cp_lock" "$_cp_owner_line"
+      warn "cannot quarantine invalid cache key: $CACHE_DIR"
+      return 1
+    fi
+    warn "quarantined invalid cache entry: $_cp_invalid"
+  fi
+  if ! mkdir "$CACHE_DIR" 2>/dev/null; then
+    if cache_entry_valid "$CACHE_DIR" "$CACHE_ID" "$@"; then
+      rm -rf "$_cp_tmp"
+      cache_lock_release "$_cp_lock" "$_cp_owner_line"
+      return 0
+    fi
+    rm -rf "$_cp_tmp"
+    cache_lock_release "$_cp_lock" "$_cp_owner_line"
+    warn "cannot claim cache entry directory: $CACHE_DIR"
     return 1
   fi
-  if ! mv "$_cp_tmp" "$CACHE_DIR"; then
-    rm -rf "$_cp_tmp" "$_cp_lock"
+  if ! mv "$_cp_tmp/identity" "$CACHE_DIR/identity" ||
+     ! mv "$_cp_tmp/files.manifest" "$CACHE_DIR/files.manifest" ||
+     ! mv "$_cp_tmp/files" "$CACHE_DIR/files" ||
+     ! : > "$CACHE_DIR/complete"; then
+    rm -rf "$CACHE_DIR" "$_cp_tmp"
+    cache_lock_release "$_cp_lock" "$_cp_owner_line"
     return 1
   fi
-  rmdir "$_cp_lock" 2>/dev/null || true
+  rmdir "$_cp_tmp" 2>/dev/null || rm -rf "$_cp_tmp"
+  [ -z "${_cp_invalid:-}" ] || rm -rf "$_cp_invalid"
+  cache_lock_release "$_cp_lock" "$_cp_owner_line"
   log "cached: $_cp_name ($CACHE_KEY)"
 }
 

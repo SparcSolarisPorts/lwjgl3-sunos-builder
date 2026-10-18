@@ -29,16 +29,51 @@ assert() { "$@" || fail "$*"; }
 JEMALLOC_REQUIRED_SYMBOLS='je_free_sized je_free_aligned_sized'
 JEMALLOC_SYMBOLS=$(printf 'Symbol Table Section: .dynsym\n  [1] 0x0000 0 FUNC GLOB 0 DEFAULT je_free_sized\n  [2] 0x0000 0 FUNC GLOB 0 DEFAULT je_free_aligned_sized')
 jemalloc_symbols_text_check "$JEMALLOC_SYMBOLS" || fail 'required jemalloc symbols rejected'
+
 if jemalloc_symbols_text_check "$(printf 'Symbol Table Section: .dynsym\n  [1] 0x0000 0 FUNC GLOB 0 DEFAULT je_free_sized')"; then
   fail 'incomplete jemalloc symbol set accepted'
 fi
 
 elf_header_file "$TMP/input/libsample.so"
 printf 'jar payload\n' > "$TMP/input/sample.jar"
+# Repository recipe syntax may contain multiple '=' assignments and compiler flags.
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one;CFLAGS=-O2 -DVALUE=1'
+[ "$CACHE_SAFE" -eq 1 ] || fail 'multi-field recipe disabled caching'
+cache_identity sample "$TMP/src" "$TMP/patches" "recipe=$(printf 'bad\nidentity')"
+[ "$CACHE_SAFE" -eq 0 ] || fail 'newline in recipe identity accepted'
 cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 KEY=$CACHE_KEY
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 cache_publish sample "$TMP/input" libsample.so sample.jar || fail 'publish failed'
 [ -f "$CACHE_DIR/complete" ] || fail 'complete marker missing'
+[ ! -e "$ARTIFACTS/sample/.$CACHE_KEY.lock" ] || fail 'publisher lock was not released'
+
+# Dead same-host owners and abandoned ownerless locks are recoverable.
+CACHE_LOCK_GRACE_SECONDS=1
+cache_identity ownerless "$TMP/src" "$TMP/patches" 'recipe=ownerless'
+_OWNERLESS_LOCK=$ARTIFACTS/ownerless/.$CACHE_KEY.lock
+mkdir -p "$_OWNERLESS_LOCK"
+cache_publish ownerless "$TMP/input" libsample.so || fail 'ownerless lock recovery failed'
+[ -f "$CACHE_DIR/complete" ] || fail 'ownerless lock did not publish'
+[ ! -e "$_OWNERLESS_LOCK" ] || fail 'ownerless lock remains after recovery'
+
+cache_identity stale "$TMP/src" "$TMP/patches" 'recipe=stale'
+_STALE_LOCK=$ARTIFACTS/stale/.$CACHE_KEY.lock
+mkdir -p "$_STALE_LOCK"
+printf '99999999 %s 0\n' "$(uname -n)" > "$_STALE_LOCK/owner"
+cache_publish stale "$TMP/input" libsample.so || fail 'stale lock recovery failed'
+[ -f "$CACHE_DIR/complete" ] || fail 'stale lock did not publish'
+[ ! -e "$_STALE_LOCK" ] || fail 'stale lock remains after recovery'
+
+cache_identity live "$TMP/src" "$TMP/patches" 'recipe=live'
+_LIVE_LOCK=$ARTIFACTS/live/.$CACHE_KEY.lock
+mkdir -p "$_LIVE_LOCK"
+printf '%s %s %s\n' "$$" "$(uname -n)" "$(date +%s)" > "$_LIVE_LOCK/owner"
+cache_publish live "$TMP/input" libsample.so || fail 'live lock publish errored'
+[ ! -e "$CACHE_DIR" ] || fail 'live lock should defer publication'
+[ -f "$_LIVE_LOCK/owner" ] || fail 'live lock was removed'
+rm -rf "$ARTIFACTS/live"
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 
 rm -f "$OUT/libsample.so" "$OUT/sample.jar"
 cache_restore sample libsample.so sample.jar || fail 'restore failed'
@@ -54,7 +89,15 @@ cache_restore sample libsample.so sample.jar || fail 'second restore failed'
 cmp -s "$TMP/input/libsample.so" "$TMP/out2/libsample.so" || fail 'second release native differs'
 cmp -s "$TMP/input/sample.jar" "$TMP/out2/sample.jar" || fail 'second release jar differs'
 
+# Invalid existing entries are quarantined and repaired on publication.
+cache_identity repair "$TMP/src" "$TMP/patches" 'recipe=repair'
+mkdir -p "$CACHE_DIR/files"
+printf 'bad identity\n' > "$CACHE_DIR/identity"
+cache_publish repair "$TMP/input" sample.jar || fail 'invalid cache entry was not repaired'
+cache_entry_valid "$CACHE_DIR" "$CACHE_ID" sample.jar || fail 'repaired cache entry is invalid'
+
 # Incomplete entries, wrong identity and corrupted payloads are misses.
+cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 rm -f "$CACHE_DIR/complete"
 rm -f "$OUT/libsample.so" "$OUT/sample.jar"
 cache_restore sample libsample.so sample.jar || fail 'incomplete restore errored'
@@ -96,6 +139,21 @@ cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 [ "$CACHE_KEY" != "$KEY1" ] || fail 'ignored input did not invalidate identity'
 printf 'first ignored payload\n' > "$TMP/src/.ignored/input"
 
+# Cache payload validation rejects extra symlinks, directories, and malformed manifests.
+cache_identity payload "$TMP/src" "$TMP/patches" 'recipe=payload'
+_P_PAYLOAD=$CACHE_DIR
+cache_publish payload "$TMP/input" sample.jar || fail 'payload setup publish failed'
+mkdir "$_P_PAYLOAD/files/empty"
+cache_entry_valid "$_P_PAYLOAD" "$CACHE_ID" sample.jar && fail 'empty payload directory accepted'
+rmdir "$_P_PAYLOAD/files/empty"
+ln -s "$TMP/input/sample.jar" "$_P_PAYLOAD/files/unlisted-link"
+cache_entry_valid "$_P_PAYLOAD" "$CACHE_ID" sample.jar && fail 'extra payload symlink accepted'
+rm "$_P_PAYLOAD/files/unlisted-link"
+cp "$_P_PAYLOAD/files.manifest" "$TMP/manifest.good"
+tr -d '\n' < "$TMP/manifest.good" > "$_P_PAYLOAD/files.manifest"
+cache_entry_valid "$_P_PAYLOAD" "$CACHE_ID" sample.jar && fail 'unterminated manifest accepted'
+cp "$TMP/manifest.good" "$_P_PAYLOAD/files.manifest"
+
 mkdir -p "$TMP/tool-a" "$TMP/tool-b"
 for _tool_dir in "$TMP/tool-a" "$TMP/tool-b"; do
   printf '#!/bin/sh\nprintf "same version\\n"\n' > "$_tool_dir/cc"
@@ -108,6 +166,22 @@ CC="$TMP/tool-b/cc"
 cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'
 [ "$CACHE_KEY" != "$KEY1" ] || fail 'tool path did not invalidate identity'
 CC=cc
+
+# Dependency fingerprints accept symlinked repository roots but reject subdirectories.
+mkdir -p "$TMP/dependency"
+git -C "$TMP/dependency" init -q
+git -C "$TMP/dependency" config user.email cache-test@example.invalid
+git -C "$TMP/dependency" config user.name cache-test
+printf 'dep\n' > "$TMP/dependency/source.txt"
+git -C "$TMP/dependency" add source.txt
+git -C "$TMP/dependency" commit -qm initial
+ln -s "$TMP/dependency" "$TMP/dependency-link"
+mkdir "$TMP/dependency/subdir"
+_DEP_FP=$(cache_dependency_fingerprint "$TMP/dependency-link") || fail 'symlink dependency fingerprint failed'
+if cache_dependency_fingerprint "$TMP/dependency/subdir" >/dev/null 2>&1; then fail 'nested dependency directory accepted'; fi
+printf 'changed\n' >> "$TMP/dependency/source.txt"
+_DEP_FP2=$(cache_dependency_fingerprint "$TMP/dependency-link") || fail 'dirty dependency fingerprint failed'
+[ "$_DEP_FP" != "$_DEP_FP2" ] || fail 'dependency changes did not alter fingerprint'
 
 # Identity changes when recipe flags, patch names/content, or source tree change.
 cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one'

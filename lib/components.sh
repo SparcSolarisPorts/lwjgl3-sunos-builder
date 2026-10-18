@@ -215,7 +215,7 @@ comp_jemalloc() {
     3.4.3*) JEMALLOC_REQUIRED_SYMBOLS='je_free_sized je_free_aligned_sized' ;;
     *) JEMALLOC_REQUIRED_SYMBOLS= ;;
   esac
-  cache_identity jemalloc "$_src" "$PATCHES/jemalloc" "prefix=je_;initial-exec-tls=off;background-thread=off;required_symbols=$JEMALLOC_REQUIRED_SYMBOLS;CFLAGS=$CFLAGS;LDFLAGS=$LDFLAGS"
+  cache_identity jemalloc "$_src" "$PATCHES/jemalloc" "prefix=je_;initial-exec-tls=off;background-thread=off;strerror_r=solaris-int;required_symbols=$JEMALLOC_REQUIRED_SYMBOLS;CFLAGS=$CFLAGS;LDFLAGS=$LDFLAGS"
   cache_restore jemalloc libjemalloc.so
   if [ "$CACHE_HIT" -eq 1 ]; then
     jemalloc_symbols_check "$OUT/libjemalloc.so" || die "cached jemalloc lacks LWJGL sized-free symbols; rebuild jemalloc"
@@ -230,6 +230,8 @@ comp_jemalloc() {
     # fallback uses pthread_setaffinity_np/cpuset_t, which Solaris lacks.
     run env CC="$CC" CFLAGS="$ARCH_FLAGS -fPIC $CFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
       je_cv_os_unfair_lock=no \
+      je_cv_strerror_r_returns_char_with_gnu_source=no \
+      je_cv_strerror_r_header_pass=yes \
       ./configure --with-jemalloc-prefix=je_ --disable-initial-exec-tls --disable-cxx
     if is_dry; then :; else
       _defs=include/jemalloc/internal/jemalloc_internal_defs.h
@@ -328,45 +330,31 @@ comp_shaderc() {
   _src=$WORK/src/shaderc
   prepare shaderc "$SHADERC_URL" "$SHADERC_REF" "$_src" "$PATCHES/shaderc"
   [ -z "${PREPARE_ONLY:-}" ] || { log "shaderc prepared at $_src"; return 0; }
+  if [ -z "${SHADERC_SKIP_SYNC:-}" ]; then
+    ( cd "$_src" 2>/dev/null || is_dry
+      run python3 utils/git-sync-deps )
+  else
+    for _dep in glslang spirv-tools spirv-headers; do
+      [ -d "$_src/third_party/$_dep" ] || die "SHADERC_SKIP_SYNC=1 requires $_src/third_party/$_dep"
+    done
+  fi
   _shaderc_deps=
   _shaderc_unknown=0
-  for _dep in glslang SPIRV-Tools SPIRV-Headers; do
+  for _dep in glslang spirv-tools spirv-headers; do
     if [ ! -d "$_src/third_party/$_dep" ]; then
       _shaderc_deps="$_shaderc_deps;$_dep=missing"
       _shaderc_unknown=1
       continue
     fi
-    _dep_commit=$(git -C "$_src/third_party/$_dep" rev-parse HEAD 2>/dev/null || true)
-    if [ -n "$_dep_commit" ]; then
-      _dep_state=$(git -C "$_src/third_party/$_dep" status --porcelain 2>/dev/null || printf unknown)
-      [ -z "$_dep_state" ] || _shaderc_unknown=1
-      _shaderc_deps="$_shaderc_deps;$_dep=$_dep_commit;state=$_dep_state"
-    else
-      _shaderc_deps="$_shaderc_deps;$_dep=unversioned"
-      _shaderc_unknown=1
-    fi
+    _dep_fingerprint=$(cache_dependency_fingerprint "$_src/third_party/$_dep" 2>/dev/null) || {
+      _dep_fingerprint=unknown; _shaderc_unknown=1;
+    }
+    _shaderc_deps="$_shaderc_deps;$_dep=$_dep_fingerprint"
   done
-  cache_identity shaderc "$_src" "$PATCHES/shaderc" "skip_sync=${SHADERC_SKIP_SYNC:-};deps=$_shaderc_deps;shared_linker_flags=$LDFLAGS;args=$SHADERC_CMAKE_ARGS"
+  cache_identity shaderc "$_src" "$PATCHES/shaderc" "skip_sync=${SHADERC_SKIP_SYNC:-};deps=$_shaderc_deps;shared_linker_flags=$LDFLAGS;args=$SHADERC_CMAKE_ARGS" third_party
   [ "$_shaderc_unknown" -eq 0 ] || CACHE_SAFE=0
   cache_restore shaderc libshaderc.so
   [ "$CACHE_HIT" -eq 1 ] && return 0
-  if [ -z "${SHADERC_SKIP_SYNC:-}" ]; then
-    ( cd "$_src" 2>/dev/null || is_dry
-      run python3 utils/git-sync-deps )
-    # Synced third-party sources are new effective inputs; recompute identity.
-    _shaderc_deps=
-    _shaderc_unknown=0
-    for _dep in glslang SPIRV-Tools SPIRV-Headers; do
-      if [ ! -d "$_src/third_party/$_dep" ]; then _shaderc_unknown=1; _shaderc_deps="$_shaderc_deps;$_dep=missing"; continue; fi
-      _dep_commit=$(git -C "$_src/third_party/$_dep" rev-parse HEAD 2>/dev/null || true)
-      if [ -z "$_dep_commit" ]; then _shaderc_unknown=1; _shaderc_deps="$_shaderc_deps;$_dep=unversioned"; continue; fi
-      _dep_state=$(git -C "$_src/third_party/$_dep" status --porcelain 2>/dev/null || printf unknown)
-      [ -z "$_dep_state" ] || _shaderc_unknown=1
-      _shaderc_deps="$_shaderc_deps;$_dep=$_dep_commit;state=$_dep_state"
-    done
-    cache_identity shaderc "$_src" "$PATCHES/shaderc" "skip_sync=${SHADERC_SKIP_SYNC:-};deps=$_shaderc_deps;shared_linker_flags=$LDFLAGS;args=$SHADERC_CMAKE_ARGS"
-    [ "$_shaderc_unknown" -eq 0 ] || CACHE_SAFE=0
-  fi
   cmake_build shaderc "$_src" \
     -DSHADERC_SKIP_INSTALL=ON -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON \
     -DSHADERC_SKIP_COPYRIGHT_CHECK=ON -DSHADERC_ENABLE_WERROR_COMPILE=OFF \
