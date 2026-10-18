@@ -507,7 +507,11 @@ jemalloc_symbols_text_check() {
 # jemalloc_symbols_check FILE -- inspect dynamic exports using Solaris or GNU tools.
 jemalloc_symbols_check() {
   _js_file=$1
+  if [ -z "${JEMALLOC_REQUIRED_SYMBOLS:-}" ]; then
+    case "${LWJGL_VERSION:-}" in 3.4.3*) JEMALLOC_REQUIRED_SYMBOLS='je_free_sized je_free_aligned_sized' ;; esac
+  fi
   [ -n "${JEMALLOC_REQUIRED_SYMBOLS:-}" ] || return 0
+  if [ -n "${DRY_RUN:-}" ]; then return 0; fi
   _js_elfdump=$(command -v elfdump 2>/dev/null || true)
   if [ -n "$_js_elfdump" ]; then
     _js_symbols=$($_js_elfdump -s "$_js_file" 2>/dev/null) || return 1
