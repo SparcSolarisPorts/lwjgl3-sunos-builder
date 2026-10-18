@@ -35,6 +35,23 @@ if jemalloc_symbols_text_check "$(printf 'Symbol Table Section: .dynsym\n  [1] 0
 fi
 
 elf_header_file "$TMP/input/libsample.so"
+[ "$(elf_header "$TMP/input/libsample.so")" = '64-bit MSB e_machine=0x002b' ] || fail 'valid SPARC ELF header not parsed'
+elf_check "$TMP/input/libsample.so" || fail 'valid SPARC ELF header rejected'
+cat > "$TMP/fake-od" <<'EOF'
+#!/bin/sh
+[ "$1 $2 $3 $4 $5 $6 $7" = '-A n -v -t x1 -N 20' ] || exit 2
+printf ' 7f 45 4c 46 02 02 01 00 00 00\n 00 00 00 00 00 00 02 00 00 2b\n'
+EOF
+chmod +x "$TMP/fake-od"
+ELF_OD=$TMP/fake-od elf_check "$TMP/input/libsample.so" || fail 'wrapped od output was not parsed'
+cat > "$TMP/fake-od-fail" <<'EOF'
+#!/bin/sh
+printf 'unsupported option\n' >&2
+exit 1
+EOF
+chmod +x "$TMP/fake-od-fail"
+if ELF_OD=$TMP/fake-od-fail elf_check "$TMP/input/libsample.so"; then fail 'od failure accepted as ELF'; fi
+unset ELF_OD
 printf 'jar payload\n' > "$TMP/input/sample.jar"
 # Repository recipe syntax may contain multiple '=' assignments and compiler flags.
 cache_identity sample "$TMP/src" "$TMP/patches" 'recipe=one;CFLAGS=-O2 -DVALUE=1'
@@ -123,6 +140,10 @@ for _bad_elf in class endian machine; do
   esac
   if cache_publish "wrong-$_bad_elf" "$TMP/input" wrong.so 2>/dev/null; then fail "$_bad_elf ELF published"; fi
 done
+printf 'not elf\n' > "$TMP/input/bad-magic.so"
+if elf_check "$TMP/input/bad-magic.so"; then fail 'bad ELF magic accepted'; fi
+printf '\177ELF\002\002' > "$TMP/input/truncated.so"
+if elf_check "$TMP/input/truncated.so"; then fail 'truncated ELF header accepted'; fi
 
 # Identity changes for ignored inputs and tool executable content/path.
 mkdir -p "$TMP/src/.ignored"

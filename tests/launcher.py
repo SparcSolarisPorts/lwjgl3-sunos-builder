@@ -99,7 +99,8 @@ class LauncherMetadataTests(unittest.TestCase):
             "LD_LIBRARY_PATH": "/custom/lib",
             "VK_DRIVER_FILES": "/etc/vulkan/icd.d/sparc.json",
         }
-        with mock.patch.object(launcher.platform, "machine", return_value="sparcv9"):
+        with mock.patch.object(launcher.platform, "machine", return_value="sparcv9"), \
+             mock.patch.object(launcher.platform, "system", return_value="SunOS"):
             env = launcher.runtime_environment(pathlib.Path("/game/bin"), source)
         entries = env["LD_LIBRARY_PATH"].split(":")
         self.assertEqual(entries[0], "/game/bin")
@@ -113,11 +114,28 @@ class LauncherMetadataTests(unittest.TestCase):
 
     def test_runtime_environment_preserves_64_bit_solaris_search_path(self):
         source = {"LD_LIBRARY_PATH": "/legacy/lib", "LD_LIBRARY_PATH_64": "/sparcv9/lib"}
-        with mock.patch.object(launcher.platform, "machine", return_value="sparcv9"):
+        with mock.patch.object(launcher.platform, "machine", return_value="sparcv9"), \
+             mock.patch.object(launcher.platform, "system", return_value="SunOS"):
             env = launcher.runtime_environment(pathlib.Path("/game/bin"), source)
         self.assertIn("/legacy/lib", env["LD_LIBRARY_PATH"])
         self.assertTrue(env["LD_LIBRARY_PATH_64"].endswith(":" + "/sparcv9/lib"))
         self.assertEqual(source["LD_LIBRARY_PATH_64"], "/sparcv9/lib")
+
+    def test_runtime_environment_adds_64_bit_path_for_solaris_machine_names(self):
+        for machine in ("sun4u", "sun4v"):
+            with self.subTest(machine=machine), \
+                 mock.patch.object(launcher.platform, "machine", return_value=machine), \
+                 mock.patch.object(launcher.platform, "system", return_value="SunOS"):
+                env = launcher.runtime_environment(pathlib.Path("/game/bin"), {})
+            self.assertEqual(env["LD_LIBRARY_PATH_64"], env["LD_LIBRARY_PATH"])
+
+    def test_runtime_environment_does_not_treat_sun4_as_solaris_off_host(self):
+        for system in ("Linux", "Darwin"):
+            with self.subTest(system=system), \
+                 mock.patch.object(launcher.platform, "machine", return_value="sun4v"), \
+                 mock.patch.object(launcher.platform, "system", return_value=system):
+                env = launcher.runtime_environment(pathlib.Path("/game/bin"), {})
+            self.assertNotIn("LD_LIBRARY_PATH_64", env)
 
     def test_vulkan_jvm_library_override(self):
         self.assertEqual(launcher.vulkan_jvm_args({}), [])

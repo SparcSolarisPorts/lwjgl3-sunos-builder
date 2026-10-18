@@ -617,12 +617,28 @@ cache_publish() {
   log "cached: $_cp_name ($CACHE_KEY)"
 }
 
+# elf_read_header FILE -- set ELF_HEADER to 20 validated hex-byte tokens.
+elf_read_header() {
+  _er_od=${ELF_OD:-od}
+  _er_output=$("$_er_od" -A n -v -t x1 -N 20 "$1" 2>/dev/null) || {
+    ELF_HEADER_ERROR="od failed while reading $1"
+    return 1
+  }
+  _er_header=$(printf '%s\n' "$_er_output" | tr 'A-F' 'a-f' | tr -s ' \t\n' ' ' | sed 's/^ //;s/ $//')
+  set -- $_er_header
+  [ "$#" -eq 20 ] || { ELF_HEADER_ERROR="expected 20 bytes from od, got $#"; return 1; }
+  for _er_byte do
+    case $_er_byte in ??) ;; *) ELF_HEADER_ERROR="invalid byte from od: $_er_byte"; return 1 ;; esac
+    case $_er_byte in *[!0-9a-f]*) ELF_HEADER_ERROR="invalid byte from od: $_er_byte"; return 1 ;; esac
+  done
+  ELF_HEADER="$(printf '%s' "$_er_header" | tr -d ' ' )"
+  ELF_HEADER_ERROR=
+}
+
 # elf_header FILE -> prints the measured ELF class, byte order and machine.
-# ELF fields are read from the first 20 bytes using POSIX od; machine is
-# encoded in bytes 18-19 (hex string positions 37-40).
 elf_header() {
-  _eh=$(od -An -v -tx1 -N20 "$1" 2>/dev/null | tr -d ' \n')
-  [ "${#_eh}" -ge 40 ] || { printf 'not-ELF'; return 1; }
+  elf_read_header "$1" || { printf 'unreadable ELF header (%s)' "$ELF_HEADER_ERROR"; return 1; }
+  _eh=$ELF_HEADER
   _emagic=$(printf '%s' "$_eh" | cut -c1-8)
   [ "$_emagic" = 7f454c46 ] || { printf 'not-ELF'; return 1; }
   _eclass=$(printf '%s' "$_eh" | cut -c9-10)
@@ -635,7 +651,8 @@ elf_header() {
 
 # elf_check FILE -> 0 when FILE is a 64-bit big-endian SPARCV9 ELF object
 elf_check() {
-  _h=$(od -An -v -tx1 -N20 "$1" 2>/dev/null | tr -d ' \n')
+  elf_read_header "$1" || return 1
+  _h=$ELF_HEADER
   _magic=$(printf '%s' "$_h" | cut -c1-8)
   _class=$(printf '%s' "$_h" | cut -c9-10)
   _data=$(printf '%s' "$_h" | cut -c11-12)

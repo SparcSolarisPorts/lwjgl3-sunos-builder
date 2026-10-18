@@ -69,7 +69,7 @@ comp_glfw() {
 # liblwjgl.so, liblwjgl_opengl.so, liblwjgl_stb.so and, depending on the
 # release, liblwjgl_tinyfd.so / liblwjgl_vma.so (all sources are bundled in the
 # LWJGL tree; version.env's NATIVES lists what Minecraft needs), plus a rebuilt
-# core jar carrying the SUNOS Platform enum.
+# override jar carrying patched core and binding Java classes.
 comp_lwjgl3() {
   need git ant "$CC"
   [ -n "${JAVA_HOME:-}" ] || die "JAVA_HOME must point at a SPARCV9 JDK (needs include/jni.h)"
@@ -90,7 +90,7 @@ comp_lwjgl3() {
   fi
   _java_version=$($JAVA_HOME/bin/java -version 2>&1 | head -1 || printf unknown)
   _ant_version=$(ant -version 2>&1 | head -1 || printf unknown)
-  cache_identity lwjgl3 "$_src" "$PATCHES/lwjgl3" "targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native};args=$LWJGL_ANT_ARGS;static_runtime=$LWJGL_SUNOS_STATIC_RUNTIME;ffi=$_ffi_identity;java=$JAVA_HOME:$_java_version;ant=$_ant_version;vulkan_class_override=1;outputs=$_lwjgl_outputs"
+  cache_identity lwjgl3 "$_src" "$PATCHES/lwjgl3" "targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native};args=$LWJGL_ANT_ARGS;static_runtime=$LWJGL_SUNOS_STATIC_RUNTIME;ffi=$_ffi_identity;java=$JAVA_HOME:$_java_version;ant=$_ant_version;binding_class_staging=v2:ALC,GL,GLES,VK;outputs=$_lwjgl_outputs"
   cache_restore lwjgl3 $_lwjgl_outputs lwjgl.jar
   [ "$CACHE_HIT" -eq 1 ] && return 0
 
@@ -173,33 +173,60 @@ lwjgl_preflight() {
   fi
 }
 
-# lwjgl_core_jar SRC -- jar the patched core classes (Platform.class lives
-# there).  Minecraft keeps the stock jars for every other module.
-lwjgl_core_jar() {
-  is_dry && { printf '+ jar core classes -> %s/lwjgl.jar\n' "$OUT" >&2; return 0; }
-  _cls=
-  for _d in "$1/bin/classes/lwjgl/core" "$1/bin/classes/core" "$1/bin/classes/lwjgl"; do
-    [ -f "$_d/org/lwjgl/system/Platform.class" ] && { _cls=$_d; break; }
+# lwjgl_find_class_root SRC MODULE CLASS -- resolve a compiled class root.
+# The Ant layouts used by the supported LWJGL tags put each module below
+# bin/classes/lwjgl/<module>; the following fallbacks preserve older layouts.
+lwjgl_find_class_root() {
+  _src=$1; _module=$2; _class=$3; _root=
+  for _d in "$_src/bin/classes/lwjgl/$_module" "$_src/bin/classes/$_module" \
+            "$_src/bin/classes/lwjgl"; do
+    [ -f "$_d/$_class" ] && { _root=$_d; break; }
   done
-  if [ -z "$_cls" ]; then
-    _cls=$(find "$1/bin" -name Platform.class -path '*org/lwjgl/system*' 2>/dev/null | head -1)
-    [ -n "$_cls" ] && _cls=${_cls%/org/lwjgl/system/Platform.class}
+  if [ -z "$_root" ]; then
+    _match=$(find "$_src/bin/classes" -type f -path "*/$_class" 2>/dev/null | sort | head -1)
+    [ -n "$_match" ] && _root=${_match%/$_class}
   fi
-  if [ -z "$_cls" ]; then warn "Platform.class not found; lwjgl.jar not produced"; return 0; fi
+  [ -n "$_root" ] && printf '%s\n' "$_root"
+}
+
+# lwjgl_stage_class_family JAR ROOT CLASS -- add a patched class and any
+# nested/synthetic companions from the same output root.  Companions are
+# optional because javac output varies, but must never come from another root.
+lwjgl_stage_class_family() {
+  _jar=$1; _root=$2; _class=$3; _primary=$_root/$_class
+  [ -f "$_primary" ] || die "patched LWJGL class missing: $_primary"
+  _dir=${_class%/*}; _name=${_class##*/}; _stem=${_name%.class}
+  _files=$_class
+  for _companion in "$_root/$_dir/$_stem"'$'*.class; do
+    [ -f "$_companion" ] || continue
+    _files="$_files ${_companion#$_root/}"
+  done
+  # shellcheck disable=SC2086
+  ( "$_jar" uf "$OUT/lwjgl.jar" -C "$_root" $_files ) ||
+    die "could not add patched LWJGL classes for $_class to $OUT/lwjgl.jar"
+  log "staged patched $_class family from ${_root#$WORK/}"
+}
+
+# lwjgl_core_jar SRC -- jar patched core classes and the patched binding
+# classes. Minecraft keeps stock module jars, so this jar must override every
+# binding changed by the Solaris patch, including javac-generated VK$1.class.
+lwjgl_core_jar() {
+  is_dry && { printf '+ jar patched LWJGL classes -> %s/lwjgl.jar\n' "$OUT" >&2; return 0; }
+  _src=$1
+  _cls=$(lwjgl_find_class_root "$_src" core org/lwjgl/system/Platform.class)
+  if [ -z "$_cls" ]; then die "Platform.class not found in LWJGL build output"; fi
   _jar=$JAVA_HOME/bin/jar
   [ -x "$_jar" ] || _jar=$(command -v jar 2>/dev/null || true)
-  if [ -z "$_jar" ]; then warn "no jar tool; classes are in $_cls"; return 0; fi
+  [ -n "$_jar" ] || die "no jar tool found; cannot create $OUT/lwjgl.jar"
   mkdir -p "$OUT"
-  ( cd "$_cls" && "$_jar" cf "$OUT/lwjgl.jar" . ) || { warn "jar creation failed"; return 0; }
-  _vk_class=$(find "$1/bin" -path '*/org/lwjgl/vulkan/VK.class' -type f 2>/dev/null | head -1)
-  if [ -n "$_vk_class" ]; then
-    _vk_root=${_vk_class%/org/lwjgl/vulkan/VK.class}
-    ( cd "$_vk_root" && "$_jar" uf "$OUT/lwjgl.jar" org/lwjgl/vulkan/VK.class ) ||
-      die "could not add patched Vulkan VK.class to $OUT/lwjgl.jar"
-    log "staged patched Vulkan VK.class from ${_vk_root#$WORK/}"
-  else
-    warn "patched Vulkan VK.class not found in LWJGL build output; runtime will use Mojang's stock VK.class"
-  fi
+  "$_jar" cf "$OUT/lwjgl.jar" -C "$_cls" . || die "jar creation failed: $OUT/lwjgl.jar"
+
+  for _binding in openal:ALC opengl:GL opengles:GLES vulkan:VK; do
+    _module=${_binding%%:*}; _name=${_binding#*:}
+    _root=$(lwjgl_find_class_root "$_src" "$_module" "org/lwjgl/$_module/$_name.class")
+    [ -n "$_root" ] || die "patched LWJGL class not found: org/lwjgl/$_module/$_name.class"
+    lwjgl_stage_class_family "$_jar" "$_root" "org/lwjgl/$_module/$_name.class"
+  done
   log "staged lwjgl.jar from ${_cls#$WORK/}"
 }
 

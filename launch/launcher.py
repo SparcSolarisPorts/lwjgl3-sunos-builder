@@ -39,7 +39,10 @@ def runtime_environment(native_dir, source=None):
     if env.get("LD_LIBRARY_PATH_64"):
         ld_paths.append(env["LD_LIBRARY_PATH_64"])
     env["LD_LIBRARY_PATH"] = ":".join(ld_paths)
-    if env.get("LD_LIBRARY_PATH_64") or "sparcv9" in platform.machine().lower():
+    machine = platform.machine().lower()
+    is_sparcv9 = "sparcv9" in machine
+    is_solaris_sparc = platform.system() == "SunOS" and machine in {"sun4u", "sun4v"}
+    if env.get("LD_LIBRARY_PATH_64") or is_sparcv9 or is_solaris_sparc:
         env["LD_LIBRARY_PATH_64"] = ":".join(ld_paths)
     return env
 
