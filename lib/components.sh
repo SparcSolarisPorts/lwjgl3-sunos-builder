@@ -45,6 +45,9 @@ comp_libffi() {
 # C ABI stable and LWJGL only dlsym()s what it needs.  Pin GLFW_REF per
 # version in version.env if you ever need an exact match.
 comp_glfw() {
+  # Keep the optional argument list defined for Solaris /usr/xpg4/bin/sh,
+  # where set -u makes an unset expansion fatal.
+  : "${GLFW_CMAKE_ARGS:=}"
   need git "$CMAKE" "$MAKE" "$CC"
   _src=$WORK/src/glfw
   prepare glfw "$GLFW_URL" "$GLFW_REF" "$_src" "$PATCHES/glfw"
