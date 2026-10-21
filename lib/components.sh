@@ -55,12 +55,12 @@ comp_glfw() {
   cache_identity glfw "$_src" "$PATCHES/glfw" "GLFW_X11_WAYLAND_OFF;GLFW_BUILD_X11=ON;CMAKE_SHARED_LINKER_FLAGS=$LDFLAGS;GLFW_CMAKE_ARGS=${GLFW_CMAKE_ARGS:-}"
   cache_restore glfw libglfw.so
   [ "$CACHE_HIT" -eq 1 ] && return 0
-  # GLFW_BUILD_WAYLAND (>=3.4) and GLFW_USE_WAYLAND (3.3.x) are both forced
-  # off; Wayland does not exist on Solaris.
+  # Wayland does not exist on Solaris. GLFW 3.5 rejects the removed
+  # GLFW_USE_WAYLAND cache variable, so only use the supported build toggle.
   cmake_build glfw "$_src" \
     -DBUILD_SHARED_LIBS=ON \
     -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF \
-    -DGLFW_BUILD_WAYLAND=OFF -DGLFW_USE_WAYLAND=OFF \
+    -DGLFW_BUILD_WAYLAND=OFF \
     -DGLFW_BUILD_X11=ON \
     -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
     $GLFW_CMAKE_ARGS
