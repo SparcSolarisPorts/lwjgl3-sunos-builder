@@ -38,11 +38,52 @@ case "$1" in
     shift; exec "$SH" "$ROOT/tools/check-patches.sh" "$@" ;;
   all)
     shift
+    # Determine parallelism: use all CPU cores by default, capped at the number
+    # of versions to avoid spawning more jobs than there are tasks.
+    _n_versions=$(versions | wc -l | tr -d ' ')
+    _n_cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+    case "$_n_cpus" in ''|*[!0-9]*) _n_cpus=4 ;; esac
+    _parallel=$_n_cpus
+    [ "$_parallel" -gt "$_n_versions" ] && _parallel=$_n_versions
+    printf '==> building all versions with %s parallel job(s)\n' "$_parallel" >&2
+    FAILED=
+    _pids=""
+    _pid_vers=""
     for v in $(versions); do
+      # Throttle: poll running PIDs until a slot opens
+      while true; do
+        _running=0
+        _new_pids=""
+        _new_vers=""
+        for _i in $_pids; do
+          if kill -0 "$_i" 2>/dev/null; then
+            _new_pids="$_new_pids $_i"
+            _running=$((_running + 1))
+          fi
+        done
+        _pids=$_new_pids
+        [ "$_running" -lt "$_parallel" ] && break
+        sleep 3
+      done
       echo "######## Minecraft $v"
-      "$SH" "$ROOT/mc/$v/build.sh" "$@" || { echo "FAILED: $v" >&2; FAILED="${FAILED-} $v"; }
+      ( "$SH" "$ROOT/mc/$v/build.sh" "$@" 2>&1 | tee "$ROOT/build_${v}.log"
+        echo $? > "$ROOT/build_${v}_exit.log" ) &
+      _pid=$!
+      _pids="$_pids $_pid"
+      _pid_vers="$_pid_vers $_pid:$v"
     done
-    [ -z "${FAILED-}" ] || { echo "failed versions:${FAILED}" >&2; exit 1; } ;;
+    # Wait for all remaining jobs
+    wait
+    # Check exit codes
+    for v in $(versions); do
+      if [ -f "$ROOT/build_${v}_exit.log" ]; then
+        _exit_code=$(tail -1 "$ROOT/build_${v}_exit.log" 2>/dev/null || echo 1)
+        case "$_exit_code" in 0) ;; *) FAILED="${FAILED-} $v" ;; esac
+        rm -f "$ROOT/build_${v}_exit.log"
+      fi
+    done
+    [ -z "${FAILED-}" ] || { echo "failed versions:${FAILED}" >&2; exit 1; }
+    printf '==> all versions built successfully\n' >&2 ;;
   *)
     v=$1; shift
     [ -f "$ROOT/mc/$v/build.sh" ] || { echo "unsupported release: $v" >&2; usage; }

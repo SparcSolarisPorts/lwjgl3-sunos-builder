@@ -1,0 +1,16 @@
+--- a/modules/lwjgl/core/src/main/c/libffi/sparc/ffitarget.h	2026-10-24 01:25:35.829184930 +0000
++++ b/modules/lwjgl/core/src/main/c/libffi/sparc/ffitarget.h	2026-10-24 01:39:25.552288165 +0000
+@@ -18,9 +18,11 @@
+ typedef enum ffi_abi
+   {
+     FFI_FIRST_ABI = 0,
+-    FFI_V8,
+-    FFI_V8PLUS,
++#ifdef SPARC64
+     FFI_V9,
++#else
++    FFI_V8,
++#endif
+     FFI_LAST_ABI,
+ #ifdef SPARC64
+     FFI_DEFAULT_ABI = FFI_V9,

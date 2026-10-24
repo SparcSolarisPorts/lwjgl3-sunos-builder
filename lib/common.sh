@@ -390,7 +390,8 @@ cache_entry_valid() {
     [ "$_ce_name" != "$_ce_line" ] || return 1
     _ce_rest=${_ce_line#* }
     case $_ce_rest in *' '*) ;; *) return 1 ;; esac
-    case $_ce_rest in *''*) return 1 ;; esac
+    case $_ce_rest in *'
+'*) return 1 ;; esac
     _ce_sum=${_ce_rest%% *}
     _ce_size=${_ce_rest#* }
     case "$_ce_sum" in ''|*[!0-9]*) return 1 ;; esac
@@ -624,14 +625,16 @@ elf_read_header() {
     ELF_HEADER_ERROR="od failed while reading $1"
     return 1
   }
-  _er_header=$(printf '%s\n' "$_er_output" | tr 'A-F' 'a-f' | tr -s ' \t\n' ' ' | sed 's/^ //;s/ $//')
+  # Use xargs to normalize whitespace (handles tabs, newlines, multiple spaces)
+  _er_header=$(printf '%s\n' "$_er_output" | tr 'A-F' 'a-f' | xargs printf '%s ' 2>/dev/null)
+  _er_header=${_er_header% }
   set -- $_er_header
   [ "$#" -eq 20 ] || { ELF_HEADER_ERROR="expected 20 bytes from od, got $#"; return 1; }
   for _er_byte do
     case $_er_byte in ??) ;; *) ELF_HEADER_ERROR="invalid byte from od: $_er_byte"; return 1 ;; esac
     case $_er_byte in *[!0-9a-f]*) ELF_HEADER_ERROR="invalid byte from od: $_er_byte"; return 1 ;; esac
   done
-  ELF_HEADER="$(printf '%s' "$_er_header" | tr -d ' ' )"
+  ELF_HEADER="$(printf '%s' "$_er_header" | tr -d ' ' | tr '\t' '')"
   ELF_HEADER_ERROR=
 }
 

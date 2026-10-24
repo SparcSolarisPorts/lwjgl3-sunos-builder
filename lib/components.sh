@@ -68,6 +68,157 @@ comp_glfw() {
   cache_publish glfw "$OUT" libglfw.so || warn "failed to publish GLFW cache entry"
 }
 
+# lwjgl_patch_nashorn SRC -- replace the <script language="javascript"> block
+# in build-bindings.xml with pure Ant XML so the build works on JDK 17+
+# where Nashorn was removed.  LWJGL 3.1.x–3.2.x use Nashorn for the
+# 'bindings' target; LWJGL 3.3+ switched to Kotlin and don't need this.
+lwjgl_patch_nashorn() {
+  is_dry && return 0
+  _src=$1
+  _bindings=$_src/config/build-bindings.xml
+  [ -f "$_bindings" ] || return 0
+  # Only patch if the file contains a Nashorn script
+  grep -q 'script language="javascript"' "$_bindings" || return 0
+  # Already patched
+  grep -q 'Replaced Nashorn script' "$_bindings" && return 0
+  log "patching build-bindings.xml to remove Nashorn dependency"
+
+  # Extract enabled binding modules (excluding DISABLE_CHECKS)
+  _mods=$(grep 'name="binding\.' "$_bindings" | grep 'value="true"' | \
+    sed 's/.*name="binding\.\([^"]*\)".*/\1/' | tr '\n' ',')
+  # Strip trailing comma
+  _mods=${_mods%,}
+
+  # Extract java-only bindings
+  _mod_java_only=$(grep 'name="java-only\.binding\.' "$_bindings" | grep 'value="true"' | \
+    sed 's/.*name="java-only\.binding\.\([^"]*\)".*/\1/' | tr '\n' ',')
+  _mod_java_only=${_mod_java_only%,}
+  : "${_mod_java_only:=}"
+
+  # Build module list (core + all bindings)
+  _mod_list="core"
+  if [ -n "$_mods" ]; then _mod_list="$_mod_list,$_mods"; fi
+
+  # Build generator bindings string
+  _gen_bindings="-Dbinding.DISABLE_CHECKS=\${binding.DISABLE_CHECKS}"
+  for _m in $(printf '%s' "$_mods" | tr ',' ' '); do
+    _gen_bindings="$_gen_bindings -Dbinding.$_m=true"
+  done
+
+  # Build classpath, templatepath, sourcepath
+  # LWJGL 3.1.x uses src/main/kotlin for templates; 3.2.x+ uses src/templates/kotlin
+  _tmpl_base="src/main/kotlin"
+  case "$LWJGL_VERSION" in
+    3.2.*|3.3.*|3.4.*) _tmpl_base="src/templates/kotlin" ;;
+  esac
+  _mod_classpath="bin/classes/lwjgl/core"
+  _mod_templatepath="modules/lwjgl/core/$_tmpl_base"
+  _mod_sourcepath="modules/lwjgl/core/src/generated/java"
+  for _m in $(printf '%s' "$_mods" | tr ',' ' '); do
+    _mod_classpath="$_mod_classpath:bin/classes/lwjgl/$_m"
+    _mod_templatepath="$_mod_templatepath:modules/lwjgl/$_m/$_tmpl_base"
+    _mod_sourcepath="$_mod_sourcepath:modules/lwjgl/$_m/src/generated/java"
+  done
+
+  # Write the replacement XML to a temp file (awk -v can't handle multiline)
+  _repl_file=$(mktemp)
+  printf '%s\n' \
+    "        <!-- Replaced Nashorn script with pure Ant XML for JDK 17+ compatibility -->" \
+    "        <property name=\"generator.bindings\" value=\"$_gen_bindings\"/>" \
+    "        <property name=\"module.list\" value=\"$_mod_list\"/>" \
+    "        <property name=\"module.list.java-only\" value=\"$_mod_java_only\"/>" \
+    "        <property name=\"module.classpath\" value=\"$_mod_classpath\"/>" \
+    "        <property name=\"module.templatepath\" value=\"$_mod_templatepath\"/>" \
+    "        <property name=\"module.sourcepath\" value=\"$_mod_sourcepath\"/>" \
+    > "$_repl_file"
+
+  # Use awk to replace the script block, reading replacement from file
+  awk -v repl_file="$_repl_file" '
+    /<script language="javascript">/ {
+      in_script=1
+      while ((getline line < repl_file) > 0) print line
+      close(repl_file)
+      next
+    }
+    /<\/script>/ && in_script { in_script=0; next }
+    in_script { next }
+    { print }
+  ' "$_bindings" > "$_bindings.tmp"
+  rm -f "$_repl_file"
+  mv "$_bindings.tmp" "$_bindings"
+  log "Nashorn script replaced in build-bindings.xml"
+}
+
+# lwjgl_patch_kotlinc SRC -- fix Kotlin compiler version in update-dependencies.xml
+# Kotlin compiler crashes on SPARC Solaris with JDK 17 for 1.x ("Unbalanced
+# tree").  LWJGL 3.3.x (Kotlin 1.x) is downgraded to 1.9.23.
+# LWJGL 3.4.x+ (Kotlin 2.x) is left unchanged — it works with JDK 25.
+lwjgl_patch_kotlinc() {
+  is_dry && return 0
+  _src=$1
+  _upd=$_src/update-dependencies.xml
+  [ -f "$_upd" ] || return 0
+  grep -q 'kotlinc-version' "$_upd" || return 0
+  # Patch Kotlin 1.x only (LWJGL 3.3.x) — Kotlin 2.x (LWJGL 3.4.x+) is left as-is
+  if grep -q 'kotlinc-version" value="1\.' "$_upd"; then
+    log "patching update-dependencies.xml: Kotlin 1.x -> 1.9.23 (SPARC compatibility)"
+    sed 's/kotlinc-version" value="1\.[^"]*"/kotlinc-version" value="1.9.23"/; s/kotlinc-build" value="1\.[^"]*"/kotlinc-build" value="1.9.23-release-471"/' "$_upd" > "$_upd.tmp"
+    mv "$_upd.tmp" "$_upd"
+  fi
+  # Do NOT patch Kotlin 2.x (LWJGL 3.4.x+) — it works with JDK 25
+}
+
+# lwjgl_prepopulate_libs SRC -- copy cached Java/Kotlin dependencies into
+# LWJGL's bin/libs/ so the Ant build can run offline.  Older LWJGL tags
+# (3.1.x–3.2.x) download from http://central.maven.org, which is often
+# unreachable; newer tags also benefit from skipping network I/O.
+lwjgl_prepopulate_libs() {
+  is_dry && return 0
+  _src=$1
+  _root_dir=$(CDPATH= cd "$_src/../../../.." && pwd)
+  _deps_root=$_root_dir/tools/lwjgl-deps
+  [ -d "$_deps_root" ] || return 0
+  _lib_dir=$_src/bin/libs
+  _java_dir=$_lib_dir/java
+  _kotlinc_dir=$_lib_dir/kotlinc
+
+  # Copy Java dependencies (jsr305, jcommander, testng, joml)
+  if [ -d "$_deps_root/java" ]; then
+    mkdir -p "$_java_dir"
+    for _jar in "$_deps_root/java/"*.jar; do
+      [ -f "$_jar" ] || continue
+      cp -f "$_jar" "$_java_dir/" 2>/dev/null || true
+    done
+  fi
+
+  # Copy Kotlin compiler matching the LWJGL version (only for 3.1.x-3.2.x that
+  # can't download from Maven Central).  LWJGL 3.3+ downloads kotlinc itself.
+  if [ ! -d "$_kotlinc_dir" ] && [ -d "$_deps_root/kotlin" ]; then
+    _lw_kver=
+    case "$LWJGL_VERSION" in
+      3.1.*) _lw_kver="1.2.20" ;;
+      3.2.*) _lw_kver="1.3.11" ;;
+    esac
+    if [ -n "$_lw_kver" ] && [ -d "$_deps_root/kotlin/$_lw_kver" ]; then
+      cp -r "$_deps_root/kotlin/$_lw_kver" "$_kotlinc_dir" 2>/dev/null || true
+    fi
+  fi
+
+  # Create touch.txt so update-dependencies.xml thinks libs are up to date
+  touch "$_java_dir/touch.txt" 2>/dev/null || true
+
+  # LWJGL 3.2.x build.xml references src/main/kotlin for all modules, but many
+  # don't have Kotlin sources. Create empty directories so kotlinc doesn't fail.
+  if [ -d "$_src/modules/lwjgl" ]; then
+    for _mod in "$_src/modules/lwjgl"/*/; do
+      [ -d "$_mod" ] || continue
+      mkdir -p "$_mod/src/main/kotlin" 2>/dev/null || true
+    done
+  fi
+
+  log "LWJGL dependencies pre-populated from $_deps_root"
+}
+
 # ------------------------------------------------------------------ LWJGL
 # liblwjgl.so, liblwjgl_opengl.so, liblwjgl_stb.so and, depending on the
 # release, liblwjgl_tinyfd.so / liblwjgl_vma.so (all sources are bundled in the
@@ -108,13 +259,33 @@ comp_lwjgl3() {
   # fails unless compile-templates has already run; override if needed for a
   # different LWJGL target layout.
   _targets=${LWJGL_ANT_TARGETS:-compile-templates generate compile compile-native}
+
+  # Replace Nashorn <script> block with pure Ant XML for JDK 17+ compatibility
+  lwjgl_patch_nashorn "$_src"
+  # Fix Kotlin compiler version for LWJGL 3.3.x+ (crashes on SPARC)
+  # Must run BEFORE lwjgl_prepopulate_libs so the cached kotlinc is removed
+  # before the pre-populated libs are copied.
+  lwjgl_patch_kotlinc "$_src"
+  # Pre-populate LWJGL bin/libs/ from cached dependencies so the Ant build
+  # does not try to download from Maven Central (which may be unreachable).
+  # Older LWJGL tags (3.1.x–3.2.x) use http://central.maven.org which is
+  # often unreachable; newer tags also benefit from offline builds.
+  lwjgl_prepopulate_libs "$_src"
+
   # -k: keep going so one failing optional binding does not hide the ones
   # Minecraft needs; verify_natives is the real pass/fail gate.
+  # -Dbuild.offline=true: only for LWJGL 3.1.x-3.2.x that use the dead
+  # http://central.maven.org; LWJGL 3.3+ uses https://repo1.maven.org and
+  # can download kotlinc normally.
+  _offline_flag=""
+  case "$LWJGL_VERSION" in
+    3.1.*|3.2.*) _offline_flag="-Dbuild.offline=true" ;;
+  esac
   if ( cd "$_src" 2>/dev/null || is_dry
        run env CC="$CC" CXX="$CXX" CFLAGS="$ARCH_FLAGS $CFLAGS" \
          CXXFLAGS="$ARCH_FLAGS $CXXFLAGS" LDFLAGS="$ARCH_FLAGS $LDFLAGS" \
          LWJGL_SUNOS_STATIC_RUNTIME="$LWJGL_SUNOS_STATIC_RUNTIME" \
-         ant -k $LWJGL_ANT_ARGS $_targets ); then
+         ant -k $_offline_flag $LWJGL_ANT_ARGS $_targets ); then
     _ant_ok=1
   else
     _ant_ok=0
@@ -127,18 +298,22 @@ comp_lwjgl3() {
     esac
   done
   lwjgl_core_jar "$_src"
-  if [ "$_ant_ok" -eq 1 ] && [ -f "$OUT/lwjgl.jar" ]; then
+  lwjgl_module_jars "$_src"
+  _lwjgl_complete=0
+  if [ -f "$OUT/lwjgl.jar" ]; then
     _lwjgl_complete=1
     for _n in $_lwjgl_outputs; do
-      if [ ! -f "$OUT/$_n" ] || ! elf_check "$OUT/$_n"; then _lwjgl_complete=0; fi
+      if [ ! -f "$OUT/$_n" ] || ! elf_check "$OUT/$_n"; then _lwjgl_complete=0; break; fi
     done
-    if [ "$_lwjgl_complete" -eq 1 ]; then
-      cache_publish lwjgl3 "$OUT" $_lwjgl_outputs lwjgl.jar || warn "failed to publish LWJGL cache entry"
+  fi
+  if [ "$_lwjgl_complete" -eq 1 ]; then
+    cache_publish lwjgl3 "$OUT" $_lwjgl_outputs lwjgl.jar || warn "failed to publish LWJGL cache entry"
+  else
+    if [ "$_ant_ok" -ne 1 ]; then
+      warn "LWJGL Ant failed; not caching potentially partial outputs"
     else
       warn "LWJGL outputs incomplete or invalid; not caching the component"
     fi
-  else
-    warn "LWJGL Ant failed; not caching potentially partial outputs"
   fi
 }
 
@@ -234,6 +409,41 @@ lwjgl_core_jar() {
     lwjgl_stage_class_family "$_jar" "$_root" "org/lwjgl/$_module/$_name.class"
   done
   log "staged lwjgl.jar from ${_cls#$WORK/}"
+}
+
+# lwjgl_module_jars SRC -- copy all compiled LWJGL module JARs from the build
+# output into $OUT/lwjgl/ so they are available alongside lwjgl.jar.  The Ant
+# build places compiled .class files under bin/classes/lwjgl/<module>/; this
+# function jars each module and copies the result.
+lwjgl_module_jars() {
+  is_dry && { printf '+ jar LWJGL modules -> %s/lwjgl/\n' "$OUT" >&2; return 0; }
+  _src=$1
+  _classes=$_src/bin/classes/lwjgl
+  [ -d "$_classes" ] || { warn "no LWJGL module classes at $_classes"; return 0; }
+  _jar=$JAVA_HOME/bin/jar
+  [ -x "$_jar" ] || _jar=$(command -v jar 2>/dev/null || true)
+  [ -n "$_jar" ] || return 0
+  _out_lwjgl=$OUT/lwjgl
+  _out_version=$_out_lwjgl/$LWJGL_VERSION
+  mkdir -p "$_out_version"
+  _count=0
+  for _mod_dir in "$_classes"/*/; do
+    [ -d "$_mod_dir" ] || continue
+    _mod=$(basename "$_mod_dir")
+    # Skip non-module directories
+    case "$_mod" in core|openal|opengl|opengles|vulkan|glfw|jemalloc|freetype|shaderc|spvc|stb|tinyfd|vma|sdl|assimp|bgfx|egl|fmod|harfbuzz|hwloc|jawt|ktx|llvm|lmdb|lz4|meshoptimizer|msdfgen|nanovg|nfd|nuklear|odbc|opencl|openxr|opus|par|remotery|renderdoc|rpmalloc|spng|tinyexr|xxhash|yoga|zstd|core11|core17|core25) ;;
+      *) continue ;;
+    esac
+    _mod_name=$_mod
+    [ "$_mod_name" = "core" ] && _mod_name="lwjgl"
+    [ "$_mod_name" != "lwjgl" ] && _mod_name="lwjgl-$_mod_name"
+    _dest_jar=$_out_version/${_mod_name}.jar
+    # Skip if already exists (e.g. from a previous run)
+    [ -f "$_dest_jar" ] && continue
+    "$_jar" cf "$_dest_jar" -C "$_mod_dir" . 2>/dev/null || continue
+    _count=$((_count + 1))
+  done
+  [ "$_count" -gt 0 ] && log "staged $_count LWJGL module JARs into $_out_version/"
 }
 
 # --------------------------------------------------------------- jemalloc

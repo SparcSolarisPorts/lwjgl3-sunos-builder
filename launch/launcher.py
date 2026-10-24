@@ -40,6 +40,11 @@ def runtime_environment(native_dir, source=None):
     if env.get("LD_LIBRARY_PATH_64"):
         ld_paths.append(env["LD_LIBRARY_PATH_64"])
     env["LD_LIBRARY_PATH"] = ":".join(ld_paths)
+    # Force Mesa to report OpenGL 4.6 so Minecraft can create its GL context.
+    # Without this, Mesa reports a lower version (e.g. 3.1) and GLFW fails with
+    # GLXBadFBConfig when Minecraft requests OpenGL 3.2+.
+    if "MESA_GL_VERSION_OVERRIDE" not in env:
+        env["MESA_GL_VERSION_OVERRIDE"] = "4.6"
     machine = platform.machine().lower()
     is_sparcv9 = "sparcv9" in machine
     is_solaris_sparc = platform.system() == "SunOS" and machine in {"sun4u", "sun4v"}
@@ -459,6 +464,24 @@ def launch_configuration(version, fabric_profiles=None):
         classpath.insert(0, str(patched_jar))
     elif stock_lwjgl:
         fail(f"patched core jar missing: {patched_jar}")
+    # Replace stock LWJGL module jars with patched ones from native_dir/lwjgl/<version>/
+    # The patched modules contain SunOS-specific code (DynamicLinkLoader, etc.) that
+    # works with the patched natives. Without this, the stock modules use System.loadLibrary
+    # which fails on Solaris/SPARC.
+    patched_modules_dir = native_dir / "lwjgl"
+    if patched_modules_dir.is_dir():
+        for ver_dir in sorted(patched_modules_dir.iterdir()):
+            if ver_dir.is_dir():
+                for mod_jar in sorted(ver_dir.iterdir()):
+                    if mod_jar.suffix == ".jar" and mod_jar.name != "lwjgl.jar":
+                        # Find matching stock jar by name pattern (e.g., lwjgl-glfw-3.3.1.jar)
+                        mod_name = mod_jar.stem  # e.g., lwjgl-glfw
+                        pattern = re.compile(rf"/org/lwjgl/{mod_name}/[0-9][^/]*/{mod_name}-[^/]+\.jar$")
+                        to_replace = [p for p in classpath if pattern.search(p)]
+                        for p in to_replace:
+                            classpath.remove(p)
+                        classpath.insert(0, str(mod_jar))
+                break  # Only use the first (and usually only) version directory
     classpath.append(str(client))
     cp = os.pathsep.join(classpath)
     main_class = profiles[-1].get("mainClass", effective.get("mainClass")) if fabric else effective.get("mainClass")
@@ -499,6 +522,13 @@ def launch_configuration(version, fabric_profiles=None):
         if expanded.startswith(("-Djava.library.path=", "-Dorg.lwjgl.librarypath=")):
             continue
         args.append(expanded)
+    # On SPARC, JOML's Unsafe-based operations cause SIGBUS due to unaligned
+    # memory access (SPARC requires aligned loads/stores). Disable Unsafe to
+    # force JOML to use NIO-based fallback (MemUtilNIO), which handles alignment correctly.
+    # platform.machine() returns "sun4v", "sun4u", etc. on Solaris/SPARC, not "sparc".
+    machine = platform.machine().lower()
+    if "sun4" in machine or platform.system() == "SunOS":
+        args += ["-Djoml.nounsafe=true"]
     args += [f"-Djava.library.path={native_dir}", f"-Dorg.lwjgl.librarypath={native_dir}", *vulkan_jvm_args(), "-cp", cp]
     game_args = [substitute(arg, values) for arg in game]
     return {"mc_home": mc_home, "native_dir": native_dir, "game_dir": game_dir, "extraction_dir": extraction_dir,

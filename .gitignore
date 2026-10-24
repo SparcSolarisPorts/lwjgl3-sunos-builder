@@ -4,3 +4,5 @@ work/
 cache/
 *.log
 config.local
+logs/*
+tools/lwjgl-deps/*

@@ -1,0 +1,17 @@
+From: LWJGL SunOS Builder
+Date: Thu, 23 Oct 2026 00:00:00 +0000
+Subject: Fix missing int type on static stbi__flip_vertically_on_write
+
+GCC 15 rejects implicit int in static declarations.
+
+--- a/modules/lwjgl/stb/src/main/c/stb_image_write.h
++++ b/modules/lwjgl/stb/src/main/c/stb_image_write.h
+@@ -236,7 +236,7 @@
+ #define STBIW_UCHAR(x) (unsigned char) ((x) & 0xff)
+ 
+ #ifdef STB_IMAGE_WRITE_STATIC
+-static stbi__flip_vertically_on_write=0;
++static int stbi__flip_vertically_on_write=0;
+ static int stbi_write_png_compression_level = 8;
+ static int stbi_write_tga_with_rle = 1;
+ static int stbi_write_force_png_filter = -1;

@@ -1,0 +1,16 @@
+--- a/modules/lwjgl/core/src/main/java/org/lwjgl/system/Library.java
++++ b/modules/lwjgl/core/src/main/java/org/lwjgl/system/Library.java
+@@ -29,7 +29,11 @@
+ public final class Library {
+ 
+     /** The LWJGL shared library name. */
+-    public static final String JNI_LIBRARY_NAME = Configuration.LIBRARY_NAME.get(System.getProperty("os.arch").contains("64") ? "lwjgl" : "lwjgl32");
++    public static final String JNI_LIBRARY_NAME = Configuration.LIBRARY_NAME.get(is64Bit() ? "lwjgl" : "lwjgl32");
++
++    private static boolean is64Bit() {
++        String arch = System.getProperty("os.arch");
++        return arch.contains("64") || arch.contains("v9") || arch.contains("aarch64");
++    }
+ 
+     static final String JAVA_LIBRARY_PATH = "java.library.path";
+
